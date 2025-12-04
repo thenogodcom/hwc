@@ -503,10 +503,23 @@ manage_singbox() {
                     read -p "是否自動生成新的 WARP 帳戶？(預設為否,手動提供金鑰) (y/N): " AUTO_WARP < /dev/tty
                     if [[ "$AUTO_WARP" =~ ^[yY]$ ]]; then
                         if ! generate_warp_conf; then press_any_key; continue; fi
+                        # --- 新的、健壯的代碼 ---
                         private_key=$(grep -oP 'PrivateKey = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
-                        ipv4_address=$(grep -oP 'Address = \K[0-9.]+' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
-                        ipv6_address=$(grep -oP 'Address = \K[0-9a-fA-F:]+' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
                         public_key=$(grep -oP 'PublicKey = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
+
+                        # 使用 awk 來精確、安全地提取 IP 地址
+                        warp_addresses=$(grep -oP 'Address = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
+                        ipv4_address=$(echo "$warp_addresses" | awk -F, '{print $1}' | awk -F/ '{print $1}')
+                        ipv6_address=$(echo "$warp_addresses" | awk -F, '{print $2}' | awk -F/ '{print $1}')
+
+                        if [ -z "$ipv4_address" ] || [ -z "$ipv6_address" ]; then
+                            log ERROR "從 wgcf-profile.conf 中提取 IP 地址失敗！"
+                            log INFO "文件內容如下:"
+                            cat "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf"
+                            press_any_key
+                            break
+                        fi
+                       
                     else
                         log INFO "請提供您的靜態 WARP WireGuard 金鑰信息。"
                         read -p "請輸入您的 WARP PrivateKey: " private_key < /dev/tty
