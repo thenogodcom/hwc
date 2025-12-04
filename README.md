@@ -20,3 +20,9 @@ hwc
 即可隨時啟動管理介面。
 
 ---
+
+更新腳本
+
+```bash
+curl -sSL "https://raw.githubusercontent.com/thenogodcom/hwc/main/hwc.sh" -o /usr/local/bin/hwc
+```
