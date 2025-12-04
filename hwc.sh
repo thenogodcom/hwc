@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.2.0 (Caddy Snippets Edition)
+# Version: 6.3.0 (Caddy Snippets Edition)
 
 # --- 第1節：全域設定與定義 ---
 
