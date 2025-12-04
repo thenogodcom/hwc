@@ -265,7 +265,7 @@ DNS
     cat > "${SINGBOX_CONFIG_FILE}" <<EOF
 {
   "log": {
-    "level": "info",
+    "level": "error",
     "timestamp": true
   },
   "dns": {
