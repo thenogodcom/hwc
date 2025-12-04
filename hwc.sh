@@ -614,7 +614,7 @@ wait_for_container_ready() {
         case "$container" in
             "$ADGUARD_CONTAINER_NAME") if docker exec "$container" sh -c "timeout 1 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then ready=true; fi;;
             "$CADDY_CONTAINER_NAME") if docker logs "$container" 2>&1 | grep -q "serving initial configuration"; then ready=true; fi;;
-            "$SINGBOX_CONTAINER_NAME") if docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "start serving|started|outbound.*selects"; then ready=true; fi;;
+            "$SINGBOX_CONTAINER_NAME") if docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "start serving|started|outbound"; then ready=true; fi;;
         esac
         if $ready; then echo ""; log INFO "✓ ${service_name} 已就緒"; return 0; fi
         echo -ne "."; sleep 1
