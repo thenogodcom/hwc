@@ -212,11 +212,10 @@ EOF
     log INFO "已為域名 ${primary_domain}$([ -n "$proxy_domain" ] && echo " 和 ${proxy_domain}") 建立 Caddyfile。"
 }
 
-# 使用 wgcf 自動註冊並生成 WARP 設定檔 (終極穩定版 v4 - 最終修正)
+# 使用 wgcf 自動註冊並生成 WARP 設定檔 (最終修正版 v4)
 generate_warp_conf() {
     log INFO "正在使用 wgcf 註冊新的 WARP 帳戶 (動態下載最新版)..."
     
-    # 檢測主機架構
     local arch
     case $(uname -m) in
         x86_64) arch="amd64";;
@@ -224,30 +223,25 @@ generate_warp_conf() {
         *) log ERROR "不支援的CPU架構: $(uname -m)"; return 1;;
     esac
     
-    # 使用單引號定義命令模板，確保 jq 語法正確
-    # 關鍵修正: contains(\"linux_%s\") 確保字符串被正確傳遞
+    # 關鍵修正：jq 的 contains() 函數參數必須是字符串，因此需要 \\" 來正確轉義
     local CMD_TEMPLATE='
     apk add --no-cache curl ca-certificates jq && \
-    WGCF_URL=$(curl -s https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r ".assets[] | select(.name | contains(\"linux_%s\")) | .browser_download_url") && \
+    WGCF_URL=$(curl -s https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r ".assets[] | select(.name | contains(\\"linux_%s\\")) | .browser_download_url") && \
     if [ -z "$WGCF_URL" ]; then echo "錯誤：無法獲取 wgcf 下載鏈接。"; exit 1; fi && \
     curl -fL -o wgcf "$WGCF_URL" && \
     chmod +x wgcf && \
     ./wgcf'
 
-    # 使用 printf 安全地將架構變量注入模板
     local WGCF_CMD
     printf -v WGCF_CMD "$CMD_TEMPLATE" "$arch"
 
-    # 執行註冊
     if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" -w /data alpine:latest sh -c "$WGCF_CMD register --accept-tos" > /dev/null 2>&1; then
         log ERROR "WARP 帳戶註冊失敗 (register)。請檢查網路或稍後重試。"
         log INFO "詳細錯誤信息, 請手動運行以下命令查看:"
-        # 為了日誌清晰，我們直接將最終命令包在單引號裡輸出
         echo "docker run --rm -v \"${SINGBOX_CONFIG_DIR}:/data\" -w /data alpine:latest sh -c '$WGCF_CMD register --accept-tos'"
         return 1
     fi
     
-    # 執行生成配置文件
     if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" -w /data alpine:latest sh -c "$WGCF_CMD generate" > /dev/null 2>&1; then
         log ERROR "WARP 設定檔生成失敗 (generate)。"; return 1
     fi
