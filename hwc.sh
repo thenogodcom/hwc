@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
@@ -374,8 +373,8 @@ update_warp_keys() {
     if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then
         log ERROR "輸入格式無效。PrivateKey 和 Address 均不能為空，且 Address 必須包含逗號。"; return 1
     fi
-    ipv4_address=$(echo "$warp_address" | cut -d',' -f1 | tr -d ' ')
-    ipv6_address=$(echo "$warp_address" | cut -d',' -f2 | tr -d ' ')
+    ipv4_address=$(echo "$warp_address" | cut -d',' -f1 | tr -d ' ' | cut -d'/' -f1)
+    ipv6_address=$(echo "$warp_address" | cut -d',' -f2 | tr -d ' ' | cut -d'/' -f1)
     
     jq --arg pk "$private_key" --arg ip4 "${ipv4_address}" --arg ip6 "${ipv6_address}" \
     '.outbounds[0].private_key = $pk | .outbounds[0].local_address = [$ip4, $ip6]' \
@@ -427,8 +426,8 @@ manage_singbox() {
                         read -p "請輸入您的 WARP PrivateKey: " private_key < /dev/tty
                         read -p "請輸入您的 WARP Address (格式: IPv4,IPv6 無需CIDR): " warp_address < /dev/tty
                         if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then log ERROR "輸入格式無效，安裝中止。"; press_any_key; continue; fi
-                        ipv4_address=$(echo "$warp_address" | cut -d',' -f1 | tr -d ' ')
-                        ipv6_address=$(echo "$warp_address" | cut -d',' -f2 | tr -d ' ')
+                        ipv4_address=$(echo "$warp_address" | cut -d',' -f1 | tr -d ' ' | cut -d'/' -f1)
+                        ipv6_address=$(echo "$warp_address" | cut -d',' -f2 | tr -d ' ' | cut -d'/' -f1)
                         public_key="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
                     fi
                     
