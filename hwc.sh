@@ -306,7 +306,15 @@ ${dns_servers_block}
       "mtu": 1280,
       "domain_resolver": "local-dns"
     },
-    { "type": "direct", "tag": "direct" }
+    {
+      "type": "direct",
+      "tag": "direct",
+      "tcp_fast_open": true,
+      "tcp_multi_path": false,
+      "udp_fragment": false,
+      "connect_timeout": "5s",
+      "domain_strategy": "prefer_ipv4"
+    }
   ],
   "route": {
     "rules": [
