@@ -2,11 +2,11 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.3.0 (Caddy Snippets Edition)
+# Version: 6.2.1 (DNS Loop Fix Edition)
 
-# --- 第1節：全域設定與定義 ---
+# --- 第1節:全域設定與定義 ---
 
-# 顏色定義，用於日誌輸出
+# 顏色定義,用於日誌輸出
 FontColor_Red="\033[31m"; FontColor_Green="\033[32m"; FontColor_Yellow="\033[33m"
 FontColor_Purple="\033[35m"; FontColor_Suffix="\033[0m"
 
@@ -30,7 +30,7 @@ SHARED_NETWORK_NAME="hwc-proxy-net"
 SCRIPT_URL="https://raw.githubusercontent.com/thenogodcom/warp/main/hwc.sh"; SHORTCUT_PATH="/usr/local/bin/hwc"
 declare -A CONTAINER_STATUSES
 
-# --- 第2節：所有函數定義 ---
+# --- 第2節:所有函數定義 ---
 
 # 自我安裝快捷命令
 self_install() {
@@ -38,9 +38,9 @@ self_install() {
     if [[ -f "$0" ]]; then running_script_path=$(readlink -f "$0"); fi
     if [ "$running_script_path" = "$SHORTCUT_PATH" ]; then return 0; fi
 
-    log INFO "首次運行設定：正在安裝 'hwc' 快捷命令以便日後存取..."
+    log INFO "首次運行設定:正在安裝 'hwc' 快捷命令以便日後存取..."
     if ! command -v curl &>/dev/null; then
-        log WARN "'curl' 未安裝，正在嘗試安裝..."
+        log WARN "'curl' 未安裝,正在嘗試安裝..."
         if command -v apt-get &>/dev/null; then apt-get update && apt-get install -y --no-install-recommends curl; fi
         if command -v yum &>/dev/null || command -v dnf &>/dev/null; then 
             command -v yum &>/dev/null && yum install -y curl
@@ -53,7 +53,7 @@ self_install() {
         exec "${SHORTCUT_PATH}" "$@"
     else
         log ERROR "無法安裝 'hwc' 快捷命令至 ${SHORTCUT_PATH}。"
-        log WARN "本次將臨時運行腳本，請檢查權限後重試。"
+        log WARN "本次將臨時運行腳本,請檢查權限後重試。"
         sleep 3
     fi
 }
@@ -78,11 +78,11 @@ validate_email() {
 validate_backend_service() {
     local service="$1"
     if [[ ! "$service" =~ ^[a-zA-Z0-9\._-]+:[0-9]+$ ]]; then
-        log ERROR "後端服務地址格式無效（應為 hostname:port）: $service"; return 1
+        log ERROR "後端服務地址格式無效(應為 hostname:port): $service"; return 1
     fi; return 0
 }
 
-# 檢測證書路徑（支持多個 CA）
+# 檢測證書路徑(支持多個 CA)
 detect_cert_path() {
     local domain="$1"; local base_path="/data/caddy/certificates"
     if container_exists "$CADDY_CONTAINER_NAME"; then
@@ -107,7 +107,7 @@ generate_random_password() {
 
 # 使用官方通用腳本自動安裝 Docker
 install_docker() {
-    log INFO "偵測到 Docker 未安裝，正在使用官方通用腳本進行安裝..."
+    log INFO "偵測到 Docker 未安裝,正在使用官方通用腳本進行安裝..."
     if ! curl -fsSL https://get.docker.com | sh; then
         log ERROR "Docker 安裝失敗。請手動運行 'curl -fsSL https://get.docker.com | sh' 檢查錯誤。"
         exit 1
@@ -124,10 +124,10 @@ check_root() { if [ "$EUID" -ne 0 ]; then log ERROR "此腳本必須以 root 身
 
 check_docker() {
     if ! command -v docker &>/dev/null; then install_docker; fi
-    if ! docker info >/dev/null 2>&1; then
-        log WARN "Docker 服務未運行，正在嘗試啟動..."; systemctl start docker; sleep 3
-        if ! docker info >/dev/null 2>&1; then
-            log ERROR "無法啟動 Docker 服務，請手動檢查。"; exit 1
+    if ! docker info > /dev/null 2>&1; then
+        log WARN "Docker 服務未運行,正在嘗試啟動..."; systemctl start docker; sleep 3
+        if ! docker info > /dev/null 2>&1; then
+            log ERROR "無法啟動 Docker 服務,請手動檢查。"; exit 1
         fi; log INFO "Docker 服務已成功啟動。"
     fi
 }
@@ -142,7 +142,7 @@ check_editor() {
 container_exists() { docker ps -a --format '{{.Names}}' | grep -q "^${1}$"; }
 press_any_key() { echo ""; read -p "按 Enter 鍵返回..." < /dev/tty; }
 
-# 生成 Caddyfile 設定檔 (優化版：使用帶參數的 Snippets)
+# 生成 Caddyfile 設定檔 (優化版:使用帶參數的 Snippets)
 generate_caddy_config() {
     local primary_domain="$1"
     local email="$2"
@@ -210,7 +210,7 @@ EOF
 # 別名/代理域名服務: ${proxy_domain}
 ${proxy_domain} {
     import security_headers
-    # 偽裝 Host 頭，將主域名靜態傳遞給後端
+    # 偽裝 Host 頭,將主域名靜態傳遞給後端
     import proxy_to_backend ${primary_domain}
 }
 EOF
@@ -221,17 +221,17 @@ EOF
 
 # 使用 wgcf 自動註冊並生成 WARP 設定檔
 generate_warp_conf() {
-    log INFO "正在使用 wgcf 註冊新的 WARP 帳戶，這可能需要一些時間..."
-    if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" neuman/wgcf register --accept-tos >/dev/null 2>&1; then
+    log INFO "正在使用 wgcf 註冊新的 WARP 帳戶,這可能需要一些時間..."
+    if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" neuman/wgcf register --accept-tos > /dev/null 2>&1; then
         log ERROR "WARP 帳戶註冊失敗 (register)。請檢查網路或稍後重試。"; return 1
     fi
-    if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" neuman/wgcf generate >/dev/null 2>&1; then
+    if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" neuman/wgcf generate > /dev/null 2>&1; then
         log ERROR "WARP 設定檔生成失敗 (generate)。"; return 1
     fi
     log INFO "WARP 帳戶和設定檔已成功生成。"; return 0
 }
 
-# 生成 Sing-box 設定檔 (參數化版本)
+# 生成 Sing-box 設定檔 (參數化版本) - 修復 DNS 迴環問題
 generate_singbox_config() {
     local domain="$1" password="$2" private_key="$3" ipv4_address="$4" ipv6_address="$5" public_key="$6"
     mkdir -p "${SINGBOX_CONFIG_DIR}"
@@ -243,14 +243,24 @@ generate_singbox_config() {
     
     local dns_block; 
     if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
-        log INFO "檢測到 AdGuard Home，Sing-box 將使用其進行 DNS 解析。"
-        dns_block=$(cat <<DNS
-    "servers": [ { "tag": "adguard", "address": "udp://${ADGUARD_CONTAINER_NAME}:53", "detour": "direct" } ],
+        # 獲取 AdGuard Home 的 IP 地址,避免 DNS 解析迴圈
+        local ag_ip; ag_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null | head -n 1)
+        if [ -n "$ag_ip" ]; then
+            log INFO "檢測到 AdGuard Home (IP: ${ag_ip}),Sing-box 將使用其進行 DNS 解析。"
+            dns_block=$(cat <<DNS
+    "servers": [ { "tag": "adguard", "address": "udp://${ag_ip}:53", "detour": "direct" } ],
     "rules": [ { "server": "adguard" } ],
 DNS
 )
+        else
+            log WARN "檢測到 AdGuard Home 但無法獲取 IP,Sing-box 將回退到 Cloudflare DNS。"
+            dns_block=$(cat <<DNS
+    "servers": [ { "tag": "cloudflare", "address": "https://1.1.1.1/dns-query", "detour": "direct" } ],
+DNS
+)
+        fi
     else
-        log WARN "未檢測到運行的 AdGuard Home，Sing-box 將使用 Cloudflare 作為預設 DNS。"
+        log WARN "未檢測到運行的 AdGuard Home,Sing-box 將使用 Cloudflare 作為預設 DNS。"
         dns_block=$(cat <<DNS
     "servers": [ { "tag": "cloudflare", "address": "https://1.1.1.1/dns-query", "detour": "direct" } ],
 DNS
@@ -321,7 +331,7 @@ manage_caddy() {
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null; docker network create "web-services" &>/dev/null
                     if docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}"; then
                         docker network connect "web-services" "${CADDY_CONTAINER_NAME}" 2>/dev/null
-                        log INFO "Caddy 部署成功，正在後台申請證書..."
+                        log INFO "Caddy 部署成功,正在後台申請證書..."
                     else 
                         log ERROR "Caddy 部署失敗。"; docker rm -f "${CADDY_CONTAINER_NAME}" 2>/dev/null; rm -rf "${CADDY_CONFIG_DIR}"
                     fi
@@ -336,10 +346,10 @@ manage_caddy() {
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1) docker logs -f "$CADDY_CONTAINER_NAME"; press_any_key;;
-                2) if check_editor; then "$EDITOR" "${CADDY_CONFIG_FILE}"; log INFO "設定已儲存，請手動重啟以應用。"; fi; press_any_key;;
+                2) if check_editor; then "$EDITOR" "${CADDY_CONFIG_FILE}"; log INFO "設定已儲存,請手動重啟以應用。"; fi; press_any_key;;
                 3) log INFO "正在重啟 Caddy..."; docker restart "$CADDY_CONTAINER_NAME"; sleep 2;;
                 4)
-                    log WARN "Sing-box 依賴 Caddy 提供證書，卸載 Caddy 將導致其無法工作。"
+                    log WARN "Sing-box 依賴 Caddy 提供證書,卸載 Caddy 將導致其無法工作。"
                     read -p "確定要卸載 Caddy 嗎? (y/N): " uninstall_choice < /dev/tty
                     if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
                         docker stop "${CADDY_CONTAINER_NAME}" &>/dev/null && docker rm "${CADDY_CONTAINER_NAME}" &>/dev/null
@@ -363,7 +373,7 @@ update_warp_keys() {
         if command -v apt-get &>/dev/null; then apt-get update && apt-get install -y jq;
         elif command -v yum &>/dev/null; then yum install -y jq;
         elif command -v dnf &>/dev/null; then dnf install -y jq;
-        else log ERROR "無法自動安裝 jq，請手動安裝後重試。"; return 1; fi
+        else log ERROR "無法自動安裝 jq,請手動安裝後重試。"; return 1; fi
     fi
 
     log INFO "請提供您的靜態 WARP WireGuard 金鑰信息。"
@@ -371,7 +381,7 @@ update_warp_keys() {
     read -p "請輸入您的 WARP PrivateKey: " private_key < /dev/tty
     read -p "請輸入您的 WARP Address (格式: IPv4/32,IPv6/128): " warp_address < /dev/tty
     if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then
-        log ERROR "輸入格式無效。PrivateKey 和 Address 均不能為空，且 Address 必須包含逗號。"; return 1
+        log ERROR "輸入格式無效。PrivateKey 和 Address 均不能為空,且 Address 必須包含逗號。"; return 1
     fi
     ipv4_address=$(echo "$warp_address" | cut -d',' -f1 | tr -d ' ' | cut -d'/' -f1)
     ipv6_address=$(echo "$warp_address" | cut -d',' -f2 | tr -d ' ' | cut -d'/' -f1)
@@ -402,7 +412,7 @@ manage_singbox() {
                         read -p "請選擇 Sing-box 使用的域名 [預設: 代理域名]: " HY_DOMAIN < /dev/tty
                         if [ -z "$HY_DOMAIN" ]; then HY_DOMAIN=$(echo "$available_domains" | awk '{print $2}'); fi
                     else
-                        read -p "請輸入 Sing-box 使用的域名（必須與 Caddy 配置一致）: " HY_DOMAIN < /dev/tty
+                        read -p "請輸入 Sing-box 使用的域名(必須與 Caddy 配置一致): " HY_DOMAIN < /dev/tty
                     fi
                     if [ -z "$HY_DOMAIN" ] || ! validate_domain "$HY_DOMAIN"; then press_any_key; continue; fi
                     
@@ -414,7 +424,7 @@ manage_singbox() {
                     fi
 
                     local private_key ipv4_address ipv6_address public_key
-                    read -p "是否自動生成新的 WARP 帳戶？(預設為否，手動提供金鑰) (y/N): " AUTO_WARP < /dev/tty
+                    read -p "是否自動生成新的 WARP 帳戶？(預設為否,手動提供金鑰) (y/N): " AUTO_WARP < /dev/tty
                     if [[ "$AUTO_WARP" =~ ^[yY]$ ]]; then
                         if ! generate_warp_conf; then press_any_key; continue; fi
                         private_key=$(grep -oP 'PrivateKey = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
@@ -425,18 +435,18 @@ manage_singbox() {
                         log INFO "請提供您的靜態 WARP WireGuard 金鑰信息。"
                         read -p "請輸入您的 WARP PrivateKey: " private_key < /dev/tty
                         read -p "請輸入您的 WARP Address (格式: IPv4,IPv6 無需CIDR): " warp_address < /dev/tty
-                        if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then log ERROR "輸入格式無效，安裝中止。"; press_any_key; continue; fi
+                        if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then log ERROR "輸入格式無效,安裝中止。"; press_any_key; continue; fi
                         ipv4_address=$(echo "$warp_address" | cut -d',' -f1 | tr -d ' ' | cut -d'/' -f1)
                         ipv6_address=$(echo "$warp_address" | cut -d',' -f2 | tr -d ' ' | cut -d'/' -f1)
                         public_key="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
                     fi
                     
                     log INFO "正在拉取最新的 Sing-box 鏡像..."; if ! docker pull "${SINGBOX_IMAGE_NAME}"; then log ERROR "Sing-box 鏡像拉取失敗。"; press_any_key; continue; fi
-                    if ! generate_singbox_config "$HY_DOMAIN" "$PASSWORD" "$private_key" "$ipv4_address" "$ipv6_address" "$public_key"; then log ERROR "Sing-box 設定檔生成失敗，安裝中止。"; press_any_key; continue; fi
+                    if ! generate_singbox_config "$HY_DOMAIN" "$PASSWORD" "$private_key" "$ipv4_address" "$ipv6_address" "$public_key"; then log ERROR "Sing-box 設定檔生成失敗,安裝中止。"; press_any_key; continue; fi
 
                     log INFO "正在部署 Sing-box 容器..."
                     SINGBOX_CMD=(docker run -d --name "${SINGBOX_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --cap-add NET_ADMIN -e ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true -p 443:443/udp -v "${SINGBOX_CONFIG_FILE}:/etc/sing-box/config.json:ro" -v "${CADDY_DATA_VOLUME}:/caddy_certs:ro" "${SINGBOX_IMAGE_NAME}" run -c /etc/sing-box/config.json)
-                    if "${SINGBOX_CMD[@]}"; then log INFO "Sing-box 部署成功。"; else log ERROR "Sing-box 部署失敗，正在清理..."; docker rm -f "${SINGBOX_CONTAINER_NAME}" 2>/dev/null; rm -rf "${SINGBOX_CONFIG_DIR}"; fi
+                    if "${SINGBOX_CMD[@]}"; then log INFO "Sing-box 部署成功。"; else log ERROR "Sing-box 部署失敗,正在清理..."; docker rm -f "${SINGBOX_CONTAINER_NAME}" 2>/dev/null; rm -rf "${SINGBOX_CONFIG_DIR}"; fi
                     press_any_key; break;;
                 0) break;; *) log ERROR "無效輸入!"; sleep 1;;
             esac
@@ -449,7 +459,7 @@ manage_singbox() {
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1) docker logs -f "$SINGBOX_CONTAINER_NAME"; press_any_key;;
-                2) if check_editor; then "$EDITOR" "${SINGBOX_CONFIG_FILE}"; log INFO "設定已儲存，請手動重啟以應用。"; fi; press_any_key;;
+                2) if check_editor; then "$EDITOR" "${SINGBOX_CONFIG_FILE}"; log INFO "設定已儲存,請手動重啟以應用。"; fi; press_any_key;;
                 3) log INFO "正在重啟 Sing-box..."; docker restart "$SINGBOX_CONTAINER_NAME"; sleep 2;;
                 4) update_warp_keys; press_any_key;;
                 5)
@@ -457,10 +467,89 @@ manage_singbox() {
                     if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
                         docker stop "${SINGBOX_CONTAINER_NAME}" &>/dev/null && docker rm "${SINGBOX_CONTAINER_NAME}" &>/dev/null
                         rm -rf "${SINGBOX_CONFIG_DIR}"; docker rmi "${SINGBOX_IMAGE_NAME}" &>/dev/null
-                        log INFO "Sing-box 已卸載，設定檔已清除。";
+                        log INFO "Sing-box 已卸載,設定檔已清除。";
                     fi
                     press_any_key; break;;
                 0) break;; *) log ERROR "無效輸入!"; sleep 1;;
+            esac
+        done
+    fi
+}
+
+# 管理 AdGuard Home
+manage_adguard() {
+    if ! container_exists "$ADGUARD_CONTAINER_NAME"; then
+        while true; do
+            clear; log INFO "--- 管理 AdGuard Home (未安裝) ---"
+            echo " 1. 安裝 AdGuard Home (DNS 廣告過濾)"
+            echo " 0. 返回主選單"
+            read -p "請輸入選項: " choice < /dev/tty
+            case "$choice" in
+                1)
+                    log INFO "--- 正在安裝 AdGuard Home ---"
+                    
+                    # 簡單檢測 53 端口
+                    if netstat -tuln | grep -q ":53 "; then
+                        log WARN "檢測到 53 端口已被佔用 (可能是 systemd-resolved)。"
+                        log WARN "建議先停止 systemd-resolved 以免衝突。"
+                        read -p "是否嘗試停止 systemd-resolved? (y/N): " fix_port < /dev/tty
+                        if [[ "$fix_port" =~ ^[yY]$ ]]; then
+                            systemctl stop systemd-resolved &>/dev/null
+                            systemctl disable systemd-resolved &>/dev/null
+                            rm -f /etc/resolv.conf && echo "nameserver 8.8.8.8" > /etc/resolv.conf
+                            log INFO "已停止 systemd-resolved 並重置 resolv.conf。"
+                        fi
+                    fi
+
+                    log INFO "正在拉取最新的 AdGuard Home 鏡像..."
+                    if ! docker pull "${ADGUARD_IMAGE_NAME}"; then log ERROR "鏡像拉取失敗。"; press_any_key; continue; fi
+
+                    mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
+                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
+
+                    log INFO "正在部署 AdGuard Home 容器..."
+                    # 端口映射: 53(DNS), 3000(初始設置), 853(DoT/DoQ)
+                    # 注意: 這裡不映射 80/443,因為被 Caddy 佔用。用戶需在 3000 完成設置,並將管理端口設為 3000 或其他非 80 端口。
+                    ADGUARD_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}")
+
+                    if "${ADGUARD_CMD[@]}"; then
+                        log INFO "AdGuard Home 部署成功。"
+                        log INFO "請立即訪問 http://<您的IP>:3000 進行初始化設置。"
+                        log WARN "【重要】在設置嚮導中,請將 '網頁管理界面' 的端口修改為 3000 (因為 80 端口已被 Caddy 佔用)。"
+                    else
+                        log ERROR "AdGuard Home 部署失敗。"; docker rm -f "${ADGUARD_CONTAINER_NAME}" 2>/dev/null
+                    fi
+                    press_any_key; break;;
+                0) break;;
+                *) log ERROR "無效輸入!"; sleep 1;;
+            esac
+        done
+    else
+        while true; do
+            clear; log INFO "--- 管理 AdGuard Home (已安裝) ---"
+            echo " 1. 查看日誌"; echo " 2. 重啟 AdGuard Home"; echo " 3. 更新 AdGuard Home"; echo " 4. 卸載 AdGuard Home"; echo " 0. 返回主選單"
+            read -p "請輸入選項: " choice < /dev/tty
+            case "$choice" in
+                1) docker logs -f "$ADGUARD_CONTAINER_NAME"; press_any_key;;
+                2) log INFO "正在重啟 AdGuard Home..."; docker restart "$ADGUARD_CONTAINER_NAME"; sleep 2;;
+                3)
+                    log INFO "正在更新 AdGuard Home..."
+                    docker pull "${ADGUARD_IMAGE_NAME}"
+                    docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
+                    ADGUARD_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}")
+                    if "${ADGUARD_CMD[@]}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
+                    press_any_key;;
+                4)
+                    read -p "確定要卸載 AdGuard Home 嗎? (y/N): " uninstall_choice < /dev/tty
+                    if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
+                        docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
+                        rm -rf "${APP_BASE_DIR}/adguard"
+                        docker rmi "${ADGUARD_IMAGE_NAME}" &>/dev/null
+                        log INFO "AdGuard Home 已卸載。";
+                    fi
+                    press_any_key; break;;
+                0) break;;
+                *) log ERROR "無效輸入!"; sleep 1;;
             esac
         done
     fi
@@ -508,7 +597,7 @@ restart_all_services() {
             log INFO "正在重啟 ${service_name}..."
             if docker restart "$container" &>/dev/null; then
                 restarted=$((restarted + 1))
-                if ! wait_for_container_ready "$container" "$service_name"; then log WARN "✗ ${service_name} 未能在 30 秒內就緒，但將繼續下一步"; fi; sleep 2
+                if ! wait_for_container_ready "$container" "$service_name"; then log WARN "✗ ${service_name} 未能在 30 秒內就緒,但將繼續下一步"; fi; sleep 2
             else log ERROR "✗ ${service_name} 重啟失敗"; fi
         fi
     done
@@ -550,7 +639,7 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.2.0)"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.2.1)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -574,7 +663,7 @@ start_menu() {
     done
 }
 
-# --- 第3節：腳本入口 (主邏輯) ---
+# --- 第3節:腳本入口 (主邏輯) ---
 clear
 cat <<-'EOM'
   ____      _        __          __      _   _             _             _
@@ -591,82 +680,4 @@ check_root
 self_install
 check_docker
 mkdir -p "${APP_BASE_DIR}"
-# 管理 AdGuard Home
-manage_adguard() {
-    if ! container_exists "$ADGUARD_CONTAINER_NAME"; then
-        while true; do
-            clear; log INFO "--- 管理 AdGuard Home (未安裝) ---"
-            echo " 1. 安裝 AdGuard Home (DNS 廣告過濾)"
-            echo " 0. 返回主選單"
-            read -p "請輸入選項: " choice < /dev/tty
-            case "$choice" in
-                1)
-                    log INFO "--- 正在安裝 AdGuard Home ---"
-                    
-                    # 簡單檢測 53 端口
-                    if netstat -tuln | grep -q ":53 "; then
-                        log WARN "檢測到 53 端口已被佔用 (可能是 systemd-resolved)。"
-                        log WARN "建議先停止 systemd-resolved 以免衝突。"
-                        read -p "是否嘗試停止 systemd-resolved? (y/N): " fix_port < /dev/tty
-                        if [[ "$fix_port" =~ ^[yY]$ ]]; then
-                            systemctl stop systemd-resolved &>/dev/null
-                            systemctl disable systemd-resolved &>/dev/null
-                            rm -f /etc/resolv.conf && echo "nameserver 8.8.8.8" > /etc/resolv.conf
-                            log INFO "已停止 systemd-resolved 並重置 resolv.conf。"
-                        fi
-                    fi
-
-                    log INFO "正在拉取最新的 AdGuard Home 鏡像..."
-                    if ! docker pull "${ADGUARD_IMAGE_NAME}"; then log ERROR "鏡像拉取失敗。"; press_any_key; continue; fi
-
-                    mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
-                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
-
-                    log INFO "正在部署 AdGuard Home 容器..."
-                    # 端口映射: 53(DNS), 3000(初始設置), 853(DoT/DoQ)
-                    # 注意: 這裡不映射 80/443，因為被 Caddy 佔用。用戶需在 3000 完成設置，並將管理端口設為 3000 或其他非 80 端口。
-                    ADGUARD_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}")
-
-                    if "${ADGUARD_CMD[@]}"; then
-                        log INFO "AdGuard Home 部署成功。"
-                        log INFO "請立即訪問 http://<您的IP>:3000 進行初始化設置。"
-                        log WARN "【重要】在設置嚮導中，請將 '網頁管理界面' 的端口修改為 3000 (因為 80 端口已被 Caddy 佔用)。"
-                    else
-                        log ERROR "AdGuard Home 部署失敗。"; docker rm -f "${ADGUARD_CONTAINER_NAME}" 2>/dev/null
-                    fi
-                    press_any_key; break;;
-                0) break;;
-                *) log ERROR "無效輸入!"; sleep 1;;
-            esac
-        done
-    else
-        while true; do
-            clear; log INFO "--- 管理 AdGuard Home (已安裝) ---"
-            echo " 1. 查看日誌"; echo " 2. 重啟 AdGuard Home"; echo " 3. 更新 AdGuard Home"; echo " 4. 卸載 AdGuard Home"; echo " 0. 返回主選單"
-            read -p "請輸入選項: " choice < /dev/tty
-            case "$choice" in
-                1) docker logs -f "$ADGUARD_CONTAINER_NAME"; press_any_key;;
-                2) log INFO "正在重啟 AdGuard Home..."; docker restart "$ADGUARD_CONTAINER_NAME"; sleep 2;;
-                3)
-                    log INFO "正在更新 AdGuard Home..."
-                    docker pull "${ADGUARD_IMAGE_NAME}"
-                    docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
-                    ADGUARD_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}")
-                    if "${ADGUARD_CMD[@]}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
-                    press_any_key;;
-                4)
-                    read -p "確定要卸載 AdGuard Home 嗎? (y/N): " uninstall_choice < /dev/tty
-                    if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
-                        docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
-                        rm -rf "${APP_BASE_DIR}/adguard"
-                        docker rmi "${ADGUARD_IMAGE_NAME}" &>/dev/null
-                        log INFO "AdGuard Home 已卸載。";
-                    fi
-                    press_any_key; break;;
-                0) break;;
-                *) log ERROR "無效輸入!"; sleep 1;;
-            esac
-        done
-    fi
-}
 start_menu
