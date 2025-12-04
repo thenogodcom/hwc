@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.2.1 (DNS Loop Fix Edition)
+# Version: 6.3.0 (Config Structure Fix Edition)
 
 # --- 第1節:全域設定與定義 ---
 
@@ -231,81 +231,132 @@ generate_warp_conf() {
     log INFO "WARP 帳戶和設定檔已成功生成。"; return 0
 }
 
-# 生成 Sing-box 設定檔 (參數化版本) - 修復 DNS 迴環問題
+# 生成 Sing-box 設定檔 - 修正版 (基於用戶提供的正確結構)
 generate_singbox_config() {
     local domain="$1" password="$2" private_key="$3" ipv4_address="$4" ipv6_address="$5" public_key="$6"
     mkdir -p "${SINGBOX_CONFIG_DIR}"
     
+    # 獲取證書路徑並轉換為 Sing-box 容器內的路徑
     local cert_path_info; cert_path_info=$(detect_cert_path "$domain")
     local cert_path; cert_path="${cert_path_info%%|*}"; local key_path; key_path="${cert_path_info##*|}"
+    
+    # Caddy 的 /data 映射到 Sing-box 的 /caddy_certs
     local cert_path_in_container; cert_path_in_container="${cert_path/\/data/\/caddy_certs}"
     local key_path_in_container; key_path_in_container="${key_path/\/data/\/caddy_certs}"
     
-    local dns_block; 
+    local dns_servers_block=""
+    
+    # 判斷是否使用 AdGuard Home (使用容器名稱解析，依賴 Docker 內建 DNS)
     if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
-        # 獲取 AdGuard Home 的 IP 地址,避免 DNS 解析迴圈
-        local ag_ip; ag_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null | head -n 1)
-        if [ -n "$ag_ip" ]; then
-            log INFO "檢測到 AdGuard Home (IP: ${ag_ip}),Sing-box 將使用其進行 DNS 解析。"
-            dns_block=$(cat <<DNS
-    "servers": [ { "tag": "adguard", "address": "udp://${ag_ip}:53", "detour": "direct" } ],
-    "rules": [ { "server": "adguard" } ],
+        log INFO "檢測到 AdGuard Home，Sing-box 將使用容器名 '${ADGUARD_CONTAINER_NAME}' 進行 DNS 解析。"
+        dns_servers_block=$(cat <<DNS
+      {
+        "type": "udp",
+        "server": "${ADGUARD_CONTAINER_NAME}",
+        "server_port": 53,
+        "tag": "adguard",
+        "domain_resolver": "local-dns"
+      },
 DNS
 )
-        else
-            log WARN "檢測到 AdGuard Home 但無法獲取 IP,Sing-box 將回退到 Cloudflare DNS。"
-            dns_block=$(cat <<DNS
-    "servers": [ { "tag": "cloudflare", "address": "https://1.1.1.1/dns-query", "detour": "direct" } ],
-DNS
-)
-        fi
     else
-        log WARN "未檢測到運行的 AdGuard Home,Sing-box 將使用 Cloudflare 作為預設 DNS。"
-        dns_block=$(cat <<DNS
-    "servers": [ { "tag": "cloudflare", "address": "https://1.1.1.1/dns-query", "detour": "direct" } ],
+        log WARN "未檢測到運行的 AdGuard Home，Sing-box 將回退到 Cloudflare DNS。"
+        dns_servers_block=$(cat <<DNS
+      {
+        "type": "https",
+        "server": "1.1.1.1",
+        "tag": "cloudflare",
+        "detour": "direct"
+      },
 DNS
 )
     fi
     
     cat > "${SINGBOX_CONFIG_FILE}" <<EOF
 {
-  "log": { "level": "info", "timestamp": true },
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
   "dns": {
-${dns_block}
+    "servers": [
+${dns_servers_block}
+      {
+        "type": "local",
+        "tag": "local-dns"
+      }
+    ],
     "strategy": "prefer_ipv4"
   },
   "inbounds": [
     {
-      "type": "hysteria2", "tag": "hy2-in", "listen": "::", "listen_port": 443,
-      "users": [ { "password": "${password}" } ],
+      "type": "hysteria2",
+      "tag": "hysteria-in",
+      "listen": "::",
+      "listen_port": 443,
+      "users": [
+        {
+          "password": "${password}"
+        }
+      ],
       "tls": {
-        "enabled": true, "server_name": "${domain}",
+        "enabled": true,
+        "server_name": "${domain}",
         "certificate_path": "${cert_path_in_container}",
         "key_path": "${key_path_in_container}"
       }
+    },
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen": "0.0.0.0",
+      "listen_port": 8008
     }
   ],
   "outbounds": [
     {
-      "type": "wireguard", "tag": "warp-out",
-      "server": "engage.cloudflareclient.com", "server_port": 2408,
-      "local_address": [ "${ipv4_address}/32", "${ipv6_address}/128" ],
+      "type": "wireguard",
+      "tag": "warp-out",
+      "local_address": [
+        "${ipv4_address}/32",
+        "${ipv6_address}/128"
+      ],
       "private_key": "${private_key}",
+      "server": "engage.cloudflareclient.com",
+      "server_port": 2408,
       "peer_public_key": "${public_key}",
-      "mtu": 1280
+      "mtu": 1280,
+      "domain_resolver": "local-dns"
     },
-    { "type": "direct", "tag": "direct" }
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
   ],
   "route": {
     "rules": [
-      { "protocol": "dns", "outbound": "direct" },
-      { "domain_suffix": [ "youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "github.com", "github.io", "githubassets.com", "githubusercontent.com" ], "outbound": "direct" }
+      {
+        "domain_suffix": [
+          "youtube.com",
+          "youtu.be",
+          "ytimg.com",
+          "googlevideo.com",
+          "github.com",
+          "github.io",
+          "githubassets.com",
+          "githubusercontent.com"
+        ],
+        "action": "route",
+        "outbound": "direct"
+      }
     ],
-    "final": "warp-out"
+    "final": "warp-out",
+    "auto_detect_interface": true,
+    "default_domain_resolver": "local-dns"
   }
 }
 EOF
-    log INFO "Sing-box 的 config.json 已成功生成。"; return 0
+    log INFO "Sing-box 的 config.json 已成功生成 (已修正 DNS 與路由結構)。"; return 0
 }
 
 # 管理 Caddy
@@ -445,7 +496,7 @@ manage_singbox() {
                     if ! generate_singbox_config "$HY_DOMAIN" "$PASSWORD" "$private_key" "$ipv4_address" "$ipv6_address" "$public_key"; then log ERROR "Sing-box 設定檔生成失敗,安裝中止。"; press_any_key; continue; fi
 
                     log INFO "正在部署 Sing-box 容器..."
-                    SINGBOX_CMD=(docker run -d --name "${SINGBOX_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --cap-add NET_ADMIN -e ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true -p 443:443/udp -v "${SINGBOX_CONFIG_FILE}:/etc/sing-box/config.json:ro" -v "${CADDY_DATA_VOLUME}:/caddy_certs:ro" "${SINGBOX_IMAGE_NAME}" run -c /etc/sing-box/config.json)
+                    SINGBOX_CMD=(docker run -d --name "${SINGBOX_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --cap-add NET_ADMIN -e ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true -p 443:443/udp -p 8008:8008/tcp -v "${SINGBOX_CONFIG_FILE}:/etc/sing-box/config.json:ro" -v "${CADDY_DATA_VOLUME}:/caddy_certs:ro" "${SINGBOX_IMAGE_NAME}" run -c /etc/sing-box/config.json)
                     if "${SINGBOX_CMD[@]}"; then log INFO "Sing-box 部署成功。"; else log ERROR "Sing-box 部署失敗,正在清理..."; docker rm -f "${SINGBOX_CONTAINER_NAME}" 2>/dev/null; rm -rf "${SINGBOX_CONFIG_DIR}"; fi
                     press_any_key; break;;
                 0) break;; *) log ERROR "無效輸入!"; sleep 1;;
@@ -509,7 +560,6 @@ manage_adguard() {
 
                     log INFO "正在部署 AdGuard Home 容器..."
                     # 端口映射: 53(DNS), 3000(初始設置), 853(DoT/DoQ)
-                    # 注意: 這裡不映射 80/443,因為被 Caddy 佔用。用戶需在 3000 完成設置,並將管理端口設為 3000 或其他非 80 端口。
                     ADGUARD_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}")
 
                     if "${ADGUARD_CMD[@]}"; then
@@ -639,7 +689,7 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.2.1)"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.3.0)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -673,7 +723,7 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (Sing-box Edition)"
+echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (Config Fix Edition)"
 echo "----------------------------------------------------------------"
 
 check_root
