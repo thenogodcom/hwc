@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.3.0 (Config Structure Fix Edition)
+# Version: 6.3.1 (Routing Loop Fix Edition)
 
 # --- 第1節:全域設定與定義 ---
 
@@ -142,7 +142,7 @@ check_editor() {
 container_exists() { docker ps -a --format '{{.Names}}' | grep -q "^${1}$"; }
 press_any_key() { echo ""; read -p "按 Enter 鍵返回..." < /dev/tty; }
 
-# 生成 Caddyfile 設定檔 (優化版:使用帶參數的 Snippets)
+# 生成 Caddyfile 設定檔
 generate_caddy_config() {
     local primary_domain="$1"
     local email="$2"
@@ -174,17 +174,14 @@ ${global_log_block}
     }
 }
 
-# --- 可重用代碼片段 (遵循 DRY 原則) ---
+# --- 可重用代碼片段 ---
 
-# 用於偽裝伺服器信息的安全頭部
 (security_headers) {
     header -Via
     header -Server
     header Server "nginx"
 }
 
-# 帶參數的反向代理片段
-# 使用方法: import proxy_to_backend <要傳遞給後端的Host頭>
 (proxy_to_backend) {
     reverse_proxy ${backend_service} {
         header_up Host {args.0}
@@ -196,10 +193,8 @@ ${global_log_block}
 
 # --- 站點定義 ---
 
-# 主域名服務: ${primary_domain}
 ${primary_domain} {
     import security_headers
-    # 將客戶端請求的 Host 頭動態傳遞給後端
     import proxy_to_backend {host}
 }
 EOF
@@ -207,21 +202,19 @@ EOF
     if [ -n "$proxy_domain" ]; then
         cat >> "${CADDY_CONFIG_FILE}" <<EOF
 
-# 別名/代理域名服務: ${proxy_domain}
 ${proxy_domain} {
     import security_headers
-    # 偽裝 Host 頭,將主域名靜態傳遞給後端
     import proxy_to_backend ${primary_domain}
 }
 EOF
     fi
     
-    log INFO "已為域名 ${primary_domain}$([ -n "$proxy_domain" ] && echo " 和 ${proxy_domain}") 建立 Caddyfile (優化版)。"
+    log INFO "已為域名 ${primary_domain}$([ -n "$proxy_domain" ] && echo " 和 ${proxy_domain}") 建立 Caddyfile。"
 }
 
 # 使用 wgcf 自動註冊並生成 WARP 設定檔
 generate_warp_conf() {
-    log INFO "正在使用 wgcf 註冊新的 WARP 帳戶,這可能需要一些時間..."
+    log INFO "正在使用 wgcf 註冊新的 WARP 帳戶..."
     if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" neuman/wgcf register --accept-tos > /dev/null 2>&1; then
         log ERROR "WARP 帳戶註冊失敗 (register)。請檢查網路或稍後重試。"; return 1
     fi
@@ -231,24 +224,21 @@ generate_warp_conf() {
     log INFO "WARP 帳戶和設定檔已成功生成。"; return 0
 }
 
-# 生成 Sing-box 設定檔 - 修正版 (基於用戶提供的正確結構)
+# 生成 Sing-box 設定檔 - 修正路由迴圈問題
 generate_singbox_config() {
     local domain="$1" password="$2" private_key="$3" ipv4_address="$4" ipv6_address="$5" public_key="$6"
     mkdir -p "${SINGBOX_CONFIG_DIR}"
     
-    # 獲取證書路徑並轉換為 Sing-box 容器內的路徑
     local cert_path_info; cert_path_info=$(detect_cert_path "$domain")
     local cert_path; cert_path="${cert_path_info%%|*}"; local key_path; key_path="${cert_path_info##*|}"
-    
-    # Caddy 的 /data 映射到 Sing-box 的 /caddy_certs
     local cert_path_in_container; cert_path_in_container="${cert_path/\/data/\/caddy_certs}"
     local key_path_in_container; key_path_in_container="${key_path/\/data/\/caddy_certs}"
     
     local dns_servers_block=""
     
-    # 判斷是否使用 AdGuard Home (使用容器名稱解析，依賴 Docker 內建 DNS)
+    # 判斷是否使用 AdGuard Home (使用容器名稱解析)
     if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
-        log INFO "檢測到 AdGuard Home，Sing-box 將使用容器名 '${ADGUARD_CONTAINER_NAME}' 進行 DNS 解析。"
+        log INFO "檢測到 AdGuard Home，Sing-box 將使用 '${ADGUARD_CONTAINER_NAME}' 進行 DNS 解析。"
         dns_servers_block=$(cat <<DNS
       {
         "type": "udp",
@@ -336,6 +326,16 @@ ${dns_servers_block}
   "route": {
     "rules": [
       {
+        "protocol": "dns",
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "ip_is_private": true,
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
         "domain_suffix": [
           "youtube.com",
           "youtu.be",
@@ -356,7 +356,7 @@ ${dns_servers_block}
   }
 }
 EOF
-    log INFO "Sing-box 的 config.json 已成功生成 (已修正 DNS 與路由結構)。"; return 0
+    log INFO "Sing-box 設定檔生成完畢 (已修復 DNS 路由迴圈問題)。"; return 0
 }
 
 # 管理 Caddy
@@ -559,7 +559,6 @@ manage_adguard() {
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
 
                     log INFO "正在部署 AdGuard Home 容器..."
-                    # 端口映射: 53(DNS), 3000(初始設置), 853(DoT/DoQ)
                     ADGUARD_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}")
 
                     if "${ADGUARD_CMD[@]}"; then
@@ -689,7 +688,7 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.3.0)"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.3.1)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -723,7 +722,7 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (Config Fix Edition)"
+echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (Route Fix Edition)"
 echo "----------------------------------------------------------------"
 
 check_root
