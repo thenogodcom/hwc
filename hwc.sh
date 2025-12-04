@@ -2,9 +2,10 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.4.1 (Routing Loop Fix Edition)
+# Version: 6.4.2 (UX-Improvement Edition)
 
 # --- 第1節:全域設定與定義 ---
+set -eo pipefail
 
 # 顏色定義,用於日誌輸出
 FontColor_Red="\033[31m"; FontColor_Green="\033[32m"; FontColor_Yellow="\033[33m"
@@ -99,10 +100,7 @@ detect_cert_path() {
 
 # 生成隨機密碼
 generate_random_password() {
-    local part1=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 8); local part2=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
-    local part3=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4); local part4=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
-    local part5=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 11)
-    echo "${part1}-${part2}-${part3}-${part4}-${part5}"
+    tr -dc 'a-z0-9' < /dev/urandom | head -c 8
 }
 
 # 使用官方通用腳本自動安裝 Docker
@@ -144,18 +142,11 @@ press_any_key() { echo ""; read -p "按 Enter 鍵返回..." < /dev/tty; }
 
 # 生成 Caddyfile 設定檔
 generate_caddy_config() {
-    local primary_domain="$1"
-    local email="$2"
-    local log_mode="$3"
-    local proxy_domain="$4"
-    local backend_service="$5"
-    
+    local primary_domain="$1" email="$2" log_mode="$3" proxy_domain="$4" backend_service="$5"
     mkdir -p "${CADDY_CONFIG_DIR}"
-    
     local global_log_block=""
     if [[ ! "$log_mode" =~ ^[yY]$ ]]; then
         global_log_block=$(cat <<-'GLOBALLOG'
-    # 全局日誌配置: 僅記錄錯誤
     log {
         output stderr
         level  ERROR
@@ -163,9 +154,7 @@ generate_caddy_config() {
 GLOBALLOG
 )
     fi
-    
     cat > "${CADDY_CONFIG_FILE}" <<EOF
-# --- 全局選項塊 ---
 {
     email ${email}
 ${global_log_block}
@@ -173,15 +162,11 @@ ${global_log_block}
         protocols h1 h2
     }
 }
-
-# --- 可重用代碼片段 ---
-
 (security_headers) {
     header -Via
     header -Server
     header Server "nginx"
 }
-
 (proxy_to_backend) {
     reverse_proxy ${backend_service} {
         header_up Host {args.0}
@@ -190,29 +175,23 @@ ${global_log_block}
         header_up X-Forwarded-Proto {scheme}
     }
 }
-
-# --- 站點定義 ---
-
 ${primary_domain} {
     import security_headers
     import proxy_to_backend {host}
 }
 EOF
-
     if [ -n "$proxy_domain" ]; then
         cat >> "${CADDY_CONFIG_FILE}" <<EOF
-
 ${proxy_domain} {
     import security_headers
     import proxy_to_backend ${primary_domain}
 }
 EOF
     fi
-    
     log INFO "已為域名 ${primary_domain}$([ -n "$proxy_domain" ] && echo " 和 ${proxy_domain}") 建立 Caddyfile。"
 }
 
-# 使用 wgcf 自動註冊並生成 WARP 設定檔 (最終修正版 v4)
+# 使用 wgcf 自動註冊並生成 WARP 設定檔 (最終穩定版)
 generate_warp_conf() {
     log INFO "正在使用 wgcf 註冊新的 WARP 帳戶 (動態下載最新版)..."
     
@@ -223,7 +202,6 @@ generate_warp_conf() {
         *) log ERROR "不支援的CPU架構: $(uname -m)"; return 1;;
     esac
     
-    # 關鍵修正：jq 的 contains() 函數參數必須是字符串，因此需要 \\" 來正確轉義
     local CMD_TEMPLATE='
     apk add --no-cache curl ca-certificates jq && \
     WGCF_URL=$(curl -s https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r ".assets[] | select(.name | contains(\\"linux_%s\\")) | .browser_download_url") && \
@@ -249,19 +227,17 @@ generate_warp_conf() {
     log INFO "WARP 帳戶和設定檔已成功生成。"; return 0
 }
 
-# 生成 Sing-box 設定檔 - 修正路由迴圈問題
+# 生成 Sing-box 設定檔
 generate_singbox_config() {
-    local domain="$1" password="$2" private_key="$3" ipv4_address="$4" ipv6_address="$5" public_key="$6"
+    local domain="$1" password="$2" private_key="$3" ipv4_address="$4" ipv6_address="$5" public_key="$6" log_level="${7:-error}"
     mkdir -p "${SINGBOX_CONFIG_DIR}"
     
     local cert_path_info; cert_path_info=$(detect_cert_path "$domain")
-    local cert_path; cert_path="${cert_path_info%%|*}"; local key_path; key_path="${cert_path_info##*|}"
-    local cert_path_in_container; cert_path_in_container="${cert_path/\/data/\/caddy_certs}"
-    local key_path_in_container; key_path_in_container="${key_path/\/data/\/caddy_certs}"
+    local cert_path="${cert_path_info%%|*}"; local key_path="${cert_path_info##*|}"
+    local cert_path_in_container="${cert_path/\/data/\/caddy_certs}"
+    local key_path_in_container="${key_path/\/data/\/caddy_certs}"
     
-    local dns_servers_block=""
-    
-    # 判斷是否使用 AdGuard Home (使用容器名稱解析)
+    local dns_servers_block
     if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
         log INFO "檢測到 AdGuard Home，Sing-box 將使用 '${ADGUARD_CONTAINER_NAME}' 進行 DNS 解析。"
         dns_servers_block=$(cat <<DNS
@@ -290,90 +266,41 @@ DNS
     cat > "${SINGBOX_CONFIG_FILE}" <<EOF
 {
   "log": {
-    "level": "error",
+    "level": "${log_level}",
     "timestamp": true
   },
   "dns": {
     "servers": [
 ${dns_servers_block}
-      {
-        "type": "local",
-        "tag": "local-dns"
-      }
+      { "type": "local", "tag": "local-dns" }
     ],
     "strategy": "prefer_ipv4"
   },
   "inbounds": [
     {
-      "type": "hysteria2",
-      "tag": "hysteria-in",
-      "listen": "::",
-      "listen_port": 443,
-      "users": [
-        {
-          "password": "${password}"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "${domain}",
-        "certificate_path": "${cert_path_in_container}",
-        "key_path": "${key_path_in_container}"
-      }
+      "type": "hysteria2", "tag": "hysteria-in", "listen": "::", "listen_port": 443,
+      "users": [ { "password": "${password}" } ],
+      "tls": { "enabled": true, "server_name": "${domain}", "certificate_path": "${cert_path_in_container}", "key_path": "${key_path_in_container}" }
     },
-    {
-      "type": "socks",
-      "tag": "socks-in",
-      "listen": "0.0.0.0",
-      "listen_port": 8008
-    }
+    { "type": "socks", "tag": "socks-in", "listen": "0.0.0.0", "listen_port": 8008 }
   ],
   "outbounds": [
     {
-      "type": "wireguard",
-      "tag": "warp-out",
-      "local_address": [
-        "${ipv4_address}/32",
-        "${ipv6_address}/128"
-      ],
+      "type": "wireguard", "tag": "warp-out",
+      "local_address": [ "${ipv4_address}/32", "${ipv6_address}/128" ],
       "private_key": "${private_key}",
-      "server": "engage.cloudflareclient.com",
-      "server_port": 2408,
+      "server": "engage.cloudflareclient.com", "server_port": 2408,
       "peer_public_key": "${public_key}",
       "mtu": 1280,
       "domain_resolver": "local-dns"
     },
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
+    { "type": "direct", "tag": "direct" }
   ],
   "route": {
     "rules": [
-      {
-        "protocol": "dns",
-        "action": "route",
-        "outbound": "direct"
-      },
-      {
-        "ip_is_private": true,
-        "action": "route",
-        "outbound": "direct"
-      },
-      {
-        "domain_suffix": [
-          "youtube.com",
-          "youtu.be",
-          "ytimg.com",
-          "googlevideo.com",
-          "github.com",
-          "github.io",
-          "githubassets.com",
-          "githubusercontent.com"
-        ],
-        "action": "route",
-        "outbound": "direct"
-      }
+      { "protocol": "dns", "outbound": "direct" },
+      { "ip_is_private": true, "outbound": "direct" },
+      { "domain_suffix": [ "youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "github.com", "github.io", "githubassets.com", "githubusercontent.com" ], "outbound": "direct" }
     ],
     "final": "warp-out",
     "auto_detect_interface": true,
@@ -381,7 +308,7 @@ ${dns_servers_block}
   }
 }
 EOF
-    log INFO "Sing-box 設定檔生成完畢 (已修復 DNS 路由迴圈問題)。"; return 0
+    log INFO "Sing-box 設定檔生成完畢。"; return 0
 }
 
 # 管理 Caddy
@@ -398,15 +325,15 @@ manage_caddy() {
                     while true; do read -p "請輸入您的郵箱: " EMAIL < /dev/tty; if [ -n "$EMAIL" ] && validate_email "$EMAIL"; then break; fi; done
                     read -p "請輸入後端服務地址 [預設: app:80]: " BACKEND_SERVICE < /dev/tty; BACKEND_SERVICE=${BACKEND_SERVICE:-app:80}
                     if ! validate_backend_service "$BACKEND_SERVICE"; then press_any_key; continue; fi
-                    while true; do read -p "請輸入代理域名: " PROXY_DOMAIN < /dev/tty; if [ -n "$PROXY_DOMAIN" ] && validate_domain "$PROXY_DOMAIN"; then break; fi; done
+                    read -p "請輸入代理域名 (可選): " PROXY_DOMAIN < /dev/tty
+                    if [ -n "$PROXY_DOMAIN" ] && ! validate_domain "$PROXY_DOMAIN"; then press_any_key; continue; fi
                     read -p "是否為 Caddy 啟用詳細日誌？(y/N): " LOG_MODE < /dev/tty
                     
                     generate_caddy_config "$PRIMARY_DOMAIN" "$EMAIL" "$LOG_MODE" "$PROXY_DOMAIN" "$BACKEND_SERVICE"
-                    log INFO "正在拉取最新的 Caddy 鏡像..."; if ! docker pull "${CADDY_IMAGE_NAME}"; then log ERROR "Caddy 鏡像拉取失敗。"; press_any_key; continue; fi
+                    log INFO "正在拉取最新的 Caddy 鏡像..."; if ! docker pull "${CADDY_IMAGE_NAME}"; then log ERROR "Caddy 鏡像拉取失敗。"; press_any_key; break; fi
                     
-                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null; docker network create "web-services" &>/dev/null
+                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     if docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}"; then
-                        docker network connect "web-services" "${CADDY_CONTAINER_NAME}" 2>/dev/null
                         log INFO "Caddy 部署成功,正在後台申請證書..."
                     else 
                         log ERROR "Caddy 部署失敗。"; docker rm -f "${CADDY_CONTAINER_NAME}" 2>/dev/null; rm -rf "${CADDY_CONFIG_DIR}"
@@ -441,7 +368,7 @@ manage_caddy() {
     fi
 }
 
-# 手動更新 WARP 金鑰
+# 手動更新 WARP 金鑰 (智能解析版)
 update_warp_keys() {
     if [ ! -f "$SINGBOX_CONFIG_FILE" ]; then log ERROR "Sing-box 設定檔 ${SINGBOX_CONFIG_FILE} 不存在。"; return 1; fi
     if ! command -v jq &>/dev/null; then
@@ -453,22 +380,34 @@ update_warp_keys() {
     fi
 
     log INFO "請提供您的靜態 WARP WireGuard 金鑰信息。"
-    local private_key; local warp_address; local ipv4_address; local ipv6_address
+    local private_key warp_address ipv4_address ipv6_address
     read -p "請輸入您的 WARP PrivateKey: " private_key < /dev/tty
-    read -p "請輸入您的 WARP Address (格式: IPv4/32,IPv6/128): " warp_address < /dev/tty
+    read -p "請輸入您的 WARP Address (可直接粘貼帶 /32,/128 的完整行): " warp_address < /dev/tty
+    
     if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then
         log ERROR "輸入格式無效。PrivateKey 和 Address 均不能為空,且 Address 必須包含逗號。"; return 1
     fi
-    ipv4_address=$(echo "$warp_address" | cut -d',' -f1 | tr -d ' ' | cut -d'/' -f1)
-    ipv6_address=$(echo "$warp_address" | cut -d',' -f2 | tr -d ' ' | cut -d'/' -f1)
+
+    # 智能解析 Address 行，自動去除 CIDR 並清理空格
+    ipv4_address=$(echo "$warp_address" | awk -F, '{print $1}' | awk -F/ '{print $1}' | xargs)
+    ipv6_address=$(echo "$warp_address" | awk -F, '{print $2}' | awk -F/ '{print $1}' | xargs)
+
+    if [ -z "$ipv4_address" ] || [ -z "$ipv6_address" ]; then
+        log ERROR "無法從輸入中正確解析 IPv4 和 IPv6 地址。請檢查格式。"; return 1
+    fi
     
-    jq --arg pk "$private_key" --arg ip4 "${ipv4_address}" --arg ip6 "${ipv6_address}" \
-    '.outbounds[0].private_key = $pk | .outbounds[0].local_address = [$ip4, $ip6]' \
+    # 使用 jq 安全地更新 JSON 文件，並重新拼接 CIDR
+    jq --arg pk "$private_key" --arg ip4 "${ipv4_address}/32" --arg ip6 "${ipv6_address}/128" \
+    '.outbounds |= map(if .tag == "warp-out" then .private_key = $pk | .local_address = [$ip4, $ip6] else . end)' \
     "$SINGBOX_CONFIG_FILE" > "${SINGBOX_CONFIG_FILE}.tmp" && mv "${SINGBOX_CONFIG_FILE}.tmp" "$SINGBOX_CONFIG_FILE"
 
-    if [ $? -eq 0 ]; then log INFO "WARP 金鑰已成功更新。請稍後手動重啟 Sing-box 容器以應用變更。";
-    else log ERROR "更新 WARP 金鑰失敗。設定檔未被修改。"; fi
+    if [ $? -eq 0 ]; then 
+        log INFO "WARP 金鑰已成功更新。請稍後手動重啟 Sing-box 容器以應用變更。"
+    else 
+        log ERROR "更新 WARP 金鑰失敗。設定檔未被修改。"
+    fi
 }
+
 
 # 管理 Sing-box
 manage_singbox() {
@@ -479,63 +418,75 @@ manage_singbox() {
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1)
-                    if ! container_exists "$CADDY_CONTAINER_NAME"; then log ERROR "依賴項缺失！請務必先安裝 Caddy。"; press_any_key; continue; fi
+                    if ! container_exists "$CADDY_CONTAINER_NAME"; then log ERROR "依賴項缺失！請務必先安裝 Caddy。"; press_any_key; break; fi
                     log INFO "--- 正在安裝 Sing-box ---"
                     local available_domains; available_domains=$(awk 'NR>1 && NF>=2 && $2=="{" {print $1}' "${CADDY_CONFIG_FILE}" 2>/dev/null | tr '\n' ' ')
                     local HY_DOMAIN=""
                     if [ -n "$available_domains" ]; then
-                        log INFO "檢測到以下域名: $available_domains"
-                        read -p "請選擇 Sing-box 使用的域名 [預設: 代理域名]: " HY_DOMAIN < /dev/tty
-                        if [ -z "$HY_DOMAIN" ]; then HY_DOMAIN=$(echo "$available_domains" | awk '{print $2}'); fi
+                        log INFO "檢測到以下可用域名: $available_domains"
+                        read -p "請選擇 Sing-box 使用的域名 [${available_domains%% *}]: " HY_DOMAIN < /dev/tty
+                        HY_DOMAIN=${HY_DOMAIN:-${available_domains%% *}}
                     else
                         read -p "請輸入 Sing-box 使用的域名(必須與 Caddy 配置一致): " HY_DOMAIN < /dev/tty
                     fi
-                    if [ -z "$HY_DOMAIN" ] || ! validate_domain "$HY_DOMAIN"; then press_any_key; continue; fi
+                    if [ -z "$HY_DOMAIN" ] || ! validate_domain "$HY_DOMAIN"; then press_any_key; break; fi
                     
                     read -p "是否手動輸入密碼？(預設自動生成) (y/N): " MANUAL_PASSWORD < /dev/tty
                     if [[ "$MANUAL_PASSWORD" =~ ^[yY]$ ]]; then
                         while true; do read -p "請設定連接密碼: " PASSWORD < /dev/tty; if [ -n "$PASSWORD" ]; then break; else log ERROR "密碼不能為空。"; fi; done
                     else
-                        PASSWORD=$(generate_random_password); log INFO "已自動生成連接密碼: ${FontColor_Yellow}${PASSWORD}${FontColor_Suffix}"
+                        PASSWORD=$(generate_random_password)-$(generate_random_password)-$(generate_random_password)
+                        log INFO "已自動生成連接密碼: ${FontColor_Yellow}${PASSWORD}${FontColor_Suffix}"
                     fi
 
+                    local SINGBOX_LOG_LEVEL="error"
+                    read -p "請選擇日誌級別 [1.warn | 2.info | 預設.error]: " LOG_CHOICE < /dev/tty
+                    case "$LOG_CHOICE" in 1) SINGBOX_LOG_LEVEL="warn";; 2) SINGBOX_LOG_LEVEL="info";; esac
+                    
                     local private_key ipv4_address ipv6_address public_key
-                    read -p "是否自動生成新的 WARP 帳戶？(預設為否,手動提供金鑰) (y/N): " AUTO_WARP < /dev/tty
-                    if [[ "$AUTO_WARP" =~ ^[yY]$ ]]; then
-                        if ! generate_warp_conf; then press_any_key; continue; fi
-                        # --- 新的、去除了空格的健壯代碼 ---
+                    read -p "是否自動生成新的 WARP 帳戶？(Y/n): " AUTO_WARP < /dev/tty
+                    if [[ ! "$AUTO_WARP" =~ ^[nN]$ ]]; then
+                        if ! generate_warp_conf; then press_any_key; break; fi
                         private_key=$(grep -oP 'PrivateKey = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
                         public_key=$(grep -oP 'PublicKey = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
-
-                        # 使用 awk 提取，然後使用 xargs 去除前後可能存在的空格
+                        
                         warp_addresses=$(grep -oP 'Address = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
                         ipv4_address=$(echo "$warp_addresses" | awk -F, '{print $1}' | awk -F/ '{print $1}' | xargs)
                         ipv6_address=$(echo "$warp_addresses" | awk -F, '{print $2}' | awk -F/ '{print $1}' | xargs)
 
                         if [ -z "$ipv4_address" ] || [ -z "$ipv6_address" ]; then
                             log ERROR "從 wgcf-profile.conf 中提取 IP 地址失敗！"
-                            log INFO "文件內容如下:"
-                            cat "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf"
-                            press_any_key
-                            break
+                            log INFO "文件內容如下:"; cat "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf"
+                            press_any_key; break
                         fi
-                       
                     else
                         log INFO "請提供您的靜態 WARP WireGuard 金鑰信息。"
                         read -p "請輸入您的 WARP PrivateKey: " private_key < /dev/tty
-                        read -p "請輸入您的 WARP Address (格式: IPv4,IPv6 無需CIDR): " warp_address < /dev/tty
-                        if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then log ERROR "輸入格式無效,安裝中止。"; press_any_key; continue; fi
-                        ipv4_address=$(echo "$warp_address" | cut -d',' -f1 | tr -d ' ' | cut -d'/' -f1)
-                        ipv6_address=$(echo "$warp_address" | cut -d',' -f2 | tr -d ' ' | cut -d'/' -f1)
+                        read -p "請輸入您的 WARP Address (可直接粘貼帶 /32,/128 的完整行): " warp_address < /dev/tty
+                        
+                        if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then
+                            log ERROR "輸入格式無效,安裝中止。"; press_any_key; break
+                        fi
+
+                        ipv4_address=$(echo "$warp_address" | awk -F, '{print $1}' | awk -F/ '{print $1}' | xargs)
+                        ipv6_address=$(echo "$warp_address" | awk -F, '{print $2}' | awk -F/ '{print $1}' | xargs)
+
+                        if [ -z "$ipv4_address" ] || [ -z "$ipv6_address" ]; then
+                            log ERROR "無法從輸入中正確解析 IPv4 和 IPv6 地址，安裝中止。"; press_any_key; break
+                        fi
+                        
                         public_key="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
                     fi
                     
-                    log INFO "正在拉取最新的 Sing-box 鏡像..."; if ! docker pull "${SINGBOX_IMAGE_NAME}"; then log ERROR "Sing-box 鏡像拉取失敗。"; press_any_key; continue; fi
-                    if ! generate_singbox_config "$HY_DOMAIN" "$PASSWORD" "$private_key" "$ipv4_address" "$ipv6_address" "$public_key"; then log ERROR "Sing-box 設定檔生成失敗,安裝中止。"; press_any_key; continue; fi
+                    log INFO "正在拉取最新的 Sing-box 鏡像..."; if ! docker pull "${SINGBOX_IMAGE_NAME}"; then log ERROR "Sing-box 鏡像拉取失敗。"; press_any_key; break; fi
+                    if ! generate_singbox_config "$HY_DOMAIN" "$PASSWORD" "$private_key" "$ipv4_address" "$ipv6_address" "$public_key" "$SINGBOX_LOG_LEVEL"; then log ERROR "Sing-box 設定檔生成失敗,安裝中止。"; press_any_key; break; fi
 
                     log INFO "正在部署 Sing-box 容器..."
-                    SINGBOX_CMD=(docker run -d --name "${SINGBOX_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --cap-add NET_ADMIN -e ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true -p 443:443/udp -p 8008:8008/tcp -v "${SINGBOX_CONFIG_FILE}:/etc/sing-box/config.json:ro" -v "${CADDY_DATA_VOLUME}:/caddy_certs:ro" "${SINGBOX_IMAGE_NAME}" run -c /etc/sing-box/config.json)
-                    if "${SINGBOX_CMD[@]}"; then log INFO "Sing-box 部署成功。"; else log ERROR "Sing-box 部署失敗,正在清理..."; docker rm -f "${SINGBOX_CONTAINER_NAME}" 2>/dev/null; rm -rf "${SINGBOX_CONFIG_DIR}"; fi
+                    if docker run -d --name "${SINGBOX_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --cap-add NET_ADMIN -p 443:443/udp -p 8008:8008/tcp -v "${SINGBOX_CONFIG_FILE}:/etc/sing-box/config.json:ro" -v "${CADDY_DATA_VOLUME}:/caddy_certs:ro" "${SINGBOX_IMAGE_NAME}" run -c /etc/sing-box/config.json; then
+                        log INFO "Sing-box 部署成功。"
+                    else 
+                        log ERROR "Sing-box 部署失敗,正在清理..."; docker rm -f "${SINGBOX_CONTAINER_NAME}" 2>/dev/null; rm -rf "${SINGBOX_CONFIG_DIR}"
+                    fi
                     press_any_key; break;;
                 0) break;; *) log ERROR "無效輸入!"; sleep 1;;
             esac
@@ -555,7 +506,7 @@ manage_singbox() {
                     read -p "確定要卸載 Sing-box 嗎? (y/N): " uninstall_choice < /dev/tty
                     if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
                         docker stop "${SINGBOX_CONTAINER_NAME}" &>/dev/null && docker rm "${SINGBOX_CONTAINER_NAME}" &>/dev/null
-                        rm -rf "${SINGBOX_CONFIG_DIR}"; docker rmi "${SINGBOX_IMAGE_NAME}" &>/dev/null
+                        rm -rf "${SINGBOX_CONFIG_DIR}"; docker rmi -f "${SINGBOX_IMAGE_NAME}" &>/dev/null
                         log INFO "Sing-box 已卸載,設定檔已清除。";
                     fi
                     press_any_key; break;;
@@ -570,17 +521,13 @@ manage_adguard() {
     if ! container_exists "$ADGUARD_CONTAINER_NAME"; then
         while true; do
             clear; log INFO "--- 管理 AdGuard Home (未安裝) ---"
-            echo " 1. 安裝 AdGuard Home (DNS 廣告過濾)"
-            echo " 0. 返回主選單"
+            echo " 1. 安裝 AdGuard Home (DNS 廣告過濾)"; echo " 0. 返回主選單"
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1)
                     log INFO "--- 正在安裝 AdGuard Home ---"
-                    
-                    # 簡單檢測 53 端口
-                    if netstat -tuln | grep -q ":53 "; then
+                    if lsof -i :53 -sTCP:LISTEN -t >/dev/null || lsof -i :53 -sUDP:LISTEN -t >/dev/null; then
                         log WARN "檢測到 53 端口已被佔用 (可能是 systemd-resolved)。"
-                        log WARN "建議先停止 systemd-resolved 以免衝突。"
                         read -p "是否嘗試停止 systemd-resolved? (y/N): " fix_port < /dev/tty
                         if [[ "$fix_port" =~ ^[yY]$ ]]; then
                             systemctl stop systemd-resolved &>/dev/null
@@ -589,26 +536,20 @@ manage_adguard() {
                             log INFO "已停止 systemd-resolved 並重置 resolv.conf。"
                         fi
                     fi
-
                     log INFO "正在拉取最新的 AdGuard Home 鏡像..."
-                    if ! docker pull "${ADGUARD_IMAGE_NAME}"; then log ERROR "鏡像拉取失敗。"; press_any_key; continue; fi
-
+                    if ! docker pull "${ADGUARD_IMAGE_NAME}"; then log ERROR "鏡像拉取失敗。"; press_any_key; break; fi
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
-
                     log INFO "正在部署 AdGuard Home 容器..."
-                    ADGUARD_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}")
-
-                    if "${ADGUARD_CMD[@]}"; then
+                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}"; then
                         log INFO "AdGuard Home 部署成功。"
                         log INFO "請立即訪問 http://<您的IP>:3000 進行初始化設置。"
-                        log WARN "【重要】在設置嚮導中,請將 '網頁管理界面' 的端口修改為 3000 (因為 80 端口已被 Caddy 佔用)。"
+                        log WARN "【重要】在設置嚮導中,請將 '網頁管理界面' 的端口修改為 3000。"
                     else
                         log ERROR "AdGuard Home 部署失敗。"; docker rm -f "${ADGUARD_CONTAINER_NAME}" 2>/dev/null
                     fi
                     press_any_key; break;;
-                0) break;;
-                *) log ERROR "無效輸入!"; sleep 1;;
+                0) break;; *) log ERROR "無效輸入!"; sleep 1;;
             esac
         done
     else
@@ -623,26 +564,24 @@ manage_adguard() {
                     log INFO "正在更新 AdGuard Home..."
                     docker pull "${ADGUARD_IMAGE_NAME}"
                     docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
-                    ADGUARD_CMD=(docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}")
-                    if "${ADGUARD_CMD[@]}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
+                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
                     press_any_key;;
                 4)
                     read -p "確定要卸載 AdGuard Home 嗎? (y/N): " uninstall_choice < /dev/tty
                     if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
                         docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
                         rm -rf "${APP_BASE_DIR}/adguard"
-                        docker rmi "${ADGUARD_IMAGE_NAME}" &>/dev/null
+                        docker rmi -f "${ADGUARD_IMAGE_NAME}" &>/dev/null
                         log INFO "AdGuard Home 已卸載。";
                     fi
                     press_any_key; break;;
-                0) break;;
-                *) log ERROR "無效輸入!"; sleep 1;;
+                0) break;; *) log ERROR "無效輸入!"; sleep 1;;
             esac
         done
     fi
 }
 
-# (非互動式) 清除所有服務的日誌
+# 清除所有服務的日誌
 clear_all_logs() {
     log INFO "正在清除所有已安裝服務容器的內部日誌..."
     for container in "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME"; do
@@ -657,15 +596,15 @@ clear_all_logs() {
 
 # 檢查容器是否就緒
 wait_for_container_ready() {
-    local container="$1"; local service_name="$2"; local max_wait="${3:-30}"
+    local container="$1" service_name="$2" max_wait="${3:-30}"
     log INFO "等待 ${service_name} 就緒..."
-    for i in $(seq 1 $max_wait); do
+    for (( i=1; i<=max_wait; i++ )); do
         if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]; then sleep 1; continue; fi
         local ready=false
         case "$container" in
             "$ADGUARD_CONTAINER_NAME") if docker exec "$container" sh -c "timeout 1 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then ready=true; fi;;
-            "$CADDY_CONTAINER_NAME") if curl -sf -m 2 http://localhost:80 >/dev/null 2>&1; then ready=true; fi;;
-            "$SINGBOX_CONTAINER_NAME") if docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "start serving|started|outbound"; then ready=true; fi;;
+            "$CADDY_CONTAINER_NAME") if docker logs "$container" 2>&1 | grep -q "serving initial configuration"; then ready=true; fi;;
+            "$SINGBOX_CONTAINER_NAME") if docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "start serving|started|outbound.*selects"; then ready=true; fi;;
         esac
         if $ready; then echo ""; log INFO "✓ ${service_name} 已就緒"; return 0; fi
         echo -ne "."; sleep 1
@@ -679,7 +618,7 @@ restart_all_services() {
     local restart_order=("$ADGUARD_CONTAINER_NAME:AdGuard (DNS)" "$CADDY_CONTAINER_NAME:Caddy (SSL)" "$SINGBOX_CONTAINER_NAME:Sing-box (核心服務)")
     local restarted=0
     for item in "${restart_order[@]}"; do
-        local container="${item%%:*}"; local service_name="${item#*:}"
+        local container="${item%%:*}" service_name="${item#*:}"
         if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
             log INFO "正在重啟 ${service_name}..."
             if docker restart "$container" &>/dev/null; then
@@ -707,7 +646,7 @@ uninstall_all_services() {
     log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null
     log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null
     log INFO "正在清除所有鏡像緩存..."
-    docker rmi "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null
+    docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null
     log INFO "所有服務已徹底清理完畢。"
 }
 
@@ -726,7 +665,7 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.4.1)"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.4.2)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -760,11 +699,11 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (Route Fix Edition)"
+echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v6.4.2)"
 echo "----------------------------------------------------------------"
 
 check_root
-self_install
+self_install "$@"
 check_docker
 mkdir -p "${APP_BASE_DIR}"
 start_menu
