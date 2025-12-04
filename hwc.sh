@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.4.2 (UX-Improvement Edition)
+# Version: 6.4.3 (Password Gen Fix Edition)
 
 # --- 第1節:全域設定與定義 ---
 set -eo pipefail
@@ -35,6 +35,10 @@ declare -A CONTAINER_STATUSES
 
 # 自我安裝快捷命令
 self_install() {
+    # 傳遞所有參數給新執行的腳本
+    local args_string
+    printf -v args_string '%q ' "$@"
+
     local running_script_path
     if [[ -f "$0" ]]; then running_script_path=$(readlink -f "$0"); fi
     if [ "$running_script_path" = "$SHORTCUT_PATH" ]; then return 0; fi
@@ -51,7 +55,7 @@ self_install() {
     if curl -sSL "${SCRIPT_URL}" -o "${SHORTCUT_PATH}"; then
         chmod +x "${SHORTCUT_PATH}"
         log INFO "快捷命令 'hwc' 安裝成功。正在從新位置重新啟動..."
-        exec "${SHORTCUT_PATH}" "$@"
+        exec "${SHORTCUT_PATH}" $args_string
     else
         log ERROR "無法安裝 'hwc' 快捷命令至 ${SHORTCUT_PATH}。"
         log WARN "本次將臨時運行腳本,請檢查權限後重試。"
@@ -98,9 +102,14 @@ detect_cert_path() {
     echo "$base_path/acme-v02.api.letsencrypt.org-directory/$domain/$domain.crt|$base_path/acme-v02.api.letsencrypt.org-directory/$domain/$domain.key"; return 1
 }
 
-# 生成隨機密碼
+# 生成隨機密碼 (UUID 格式，可讀性好)
 generate_random_password() {
-    tr -dc 'a-z0-9' < /dev/urandom | head -c 8
+    local part1=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 8)
+    local part2=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
+    local part3=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
+    local part4=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
+    local part5=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 12)
+    echo "${part1}-${part2}-${part3}-${part4}-${part5}"
 }
 
 # 使用官方通用腳本自動安裝 Docker
@@ -212,6 +221,9 @@ generate_warp_conf() {
 
     local WGCF_CMD
     printf -v WGCF_CMD "$CMD_TEMPLATE" "$arch"
+
+    # 刪除可能存在的舊帳戶文件，確保可以重新註冊
+    rm -f "${SINGBOX_CONFIG_DIR}/wgcf-account.toml"
 
     if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" -w /data alpine:latest sh -c "$WGCF_CMD register --accept-tos" > /dev/null 2>&1; then
         log ERROR "WARP 帳戶註冊失敗 (register)。請檢查網路或稍後重試。"
@@ -408,7 +420,6 @@ update_warp_keys() {
     fi
 }
 
-
 # 管理 Sing-box
 manage_singbox() {
     if ! container_exists "$SINGBOX_CONTAINER_NAME"; then
@@ -435,7 +446,7 @@ manage_singbox() {
                     if [[ "$MANUAL_PASSWORD" =~ ^[yY]$ ]]; then
                         while true; do read -p "請設定連接密碼: " PASSWORD < /dev/tty; if [ -n "$PASSWORD" ]; then break; else log ERROR "密碼不能為空。"; fi; done
                     else
-                        PASSWORD=$(generate_random_password)-$(generate_random_password)-$(generate_random_password)
+                        PASSWORD=$(generate_random_password)
                         log INFO "已自動生成連接密碼: ${FontColor_Yellow}${PASSWORD}${FontColor_Suffix}"
                     fi
 
@@ -536,8 +547,7 @@ manage_adguard() {
                             log INFO "已停止 systemd-resolved 並重置 resolv.conf。"
                         fi
                     fi
-                    log INFO "正在拉取最新的 AdGuard Home 鏡像..."
-                    if ! docker pull "${ADGUARD_IMAGE_NAME}"; then log ERROR "鏡像拉取失敗。"; press_any_key; break; fi
+                    log INFO "正在拉取最新的 AdGuard Home 鏡像..."; if ! docker pull "${ADGUARD_IMAGE_NAME}"; then log ERROR "鏡像拉取失敗。"; press_any_key; break; fi
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     log INFO "正在部署 AdGuard Home 容器..."
