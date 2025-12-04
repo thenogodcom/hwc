@@ -212,7 +212,7 @@ EOF
     log INFO "已為域名 ${primary_domain}$([ -n "$proxy_domain" ] && echo " 和 ${proxy_domain}") 建立 Caddyfile。"
 }
 
-# 使用 wgcf 自動註冊並生成 WARP 設定檔 (終極穩定版 v3)
+# 使用 wgcf 自動註冊並生成 WARP 設定檔 (終極穩定版 v4 - 最終修正)
 generate_warp_conf() {
     log INFO "正在使用 wgcf 註冊新的 WARP 帳戶 (動態下載最新版)..."
     
@@ -224,8 +224,8 @@ generate_warp_conf() {
         *) log ERROR "不支援的CPU架構: $(uname -m)"; return 1;;
     esac
     
-    # 使用單引號定義命令模板，防止任何主機 Shell 擴展
-    # 使用 %s 作為架構的佔位符
+    # 使用單引號定義命令模板，確保 jq 語法正確
+    # 關鍵修正: contains(\"linux_%s\") 確保字符串被正確傳遞
     local CMD_TEMPLATE='
     apk add --no-cache curl ca-certificates jq && \
     WGCF_URL=$(curl -s https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r ".assets[] | select(.name | contains(\"linux_%s\")) | .browser_download_url") && \
@@ -234,7 +234,7 @@ generate_warp_conf() {
     chmod +x wgcf && \
     ./wgcf'
 
-    # 使用 printf 安全地將架構變量注入模板，生成最終命令
+    # 使用 printf 安全地將架構變量注入模板
     local WGCF_CMD
     printf -v WGCF_CMD "$CMD_TEMPLATE" "$arch"
 
