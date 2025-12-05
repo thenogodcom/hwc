@@ -317,7 +317,9 @@ ${dns_servers_block}
           "address": "162.159.192.1",
           "port": 2408,
           "public_key": "${public_key}",
-          "allowed_ips": [ "0.0.0.0/0", "::/0" ]
+          "allowed_ips": [ "0.0.0.0/0", "::/0" ],
+          "persistent_keepalive_interval": 30,  
+          "reserved": [0, 0, 0]
         }
       ]
     }
