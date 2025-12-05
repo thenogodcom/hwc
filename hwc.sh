@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.5.0 (Password Gen Fix Edition)
+# Version: 6.5.0 (Password Gen Fix Edition - Internal DNS Mod)
 
 # --- 第1節:全域設定與定義 ---
 set -eo pipefail
@@ -236,7 +236,7 @@ generate_warp_conf() {
         log ERROR "WARP 設定檔生成失敗 (generate)。"; return 1
     fi
     
-    log INFO "WARP 帳戶和設定檔已成功生成。"; return 0
+    log INFO "WARP 帳戶和設定檔已成功生成。"
 }
 
 # 生成 Sing-box 設定檔
@@ -338,15 +338,13 @@ ${dns_servers_block}
       { "domain_suffix": [ "youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "github.com", "github.io", "githubassets.com", "githubusercontent.com" ], "outbound": "direct" }
     ],
     "final": "warp-out",
-    "auto_detect_interface": true,
-    "default_domain_resolver": "local-dns"
+    "auto_detect_interface": true
   }
 }
 EOF
-    log INFO "Sing-box 設定檔生成完畢。"; return 0
+    log INFO "Sing-box 設定檔生成完畢。"
 }
 
-# 管理 Caddy
 manage_caddy() {
     if ! container_exists "$CADDY_CONTAINER_NAME"; then
         while true; do
@@ -555,11 +553,11 @@ manage_adguard() {
     if ! container_exists "$ADGUARD_CONTAINER_NAME"; then
         while true; do
             clear; log INFO "--- 管理 AdGuard Home (未安裝) ---"
-            echo " 1. 安裝 AdGuard Home (DNS 廣告過濾)"; echo " 0. 返回主選單"
+            echo " 1. 安裝 AdGuard Home (內部 DNS 過濾)"; echo " 0. 返回主選單"
             read -p "請輸入選項: " choice < /dev/tty
             case "$choice" in
                 1)
-                    log INFO "--- 正在安裝 AdGuard Home ---"
+                    log INFO "--- 正在安裝 AdGuard Home (內部DNS模式) ---"
                     if lsof -i :53 -sTCP:LISTEN -t >/dev/null || lsof -i :53 -sUDP:LISTEN -t >/dev/null; then
                         log WARN "檢測到 53 端口已被佔用 (可能是 systemd-resolved)。"
                         read -p "是否嘗試停止 systemd-resolved? (y/N): " fix_port < /dev/tty
@@ -574,7 +572,10 @@ manage_adguard() {
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     log INFO "正在部署 AdGuard Home 容器..."
-                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}"; then
+                    # --- MODIFICATION START ---
+                    # Removed port mappings for 53 and 853 to make it an internal-only DNS service.
+                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then
+                    # --- MODIFICATION END ---
                         log INFO "AdGuard Home 部署成功。"
                         log INFO "請立即訪問 http://<您的IP>:3000 進行初始化設置。"
                         log WARN "【重要】在設置嚮導中,請將 '網頁管理界面' 的端口修改為 3000。"
@@ -597,7 +598,10 @@ manage_adguard() {
                     log INFO "正在更新 AdGuard Home..."
                     docker pull "${ADGUARD_IMAGE_NAME}"
                     docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
-                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 53:53/tcp -p 53:53/udp -p 3000:3000/tcp -p 853:853/tcp -p 853:853/udp "${ADGUARD_IMAGE_NAME}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
+                    # --- MODIFICATION START ---
+                    # Removed port mappings for 53 and 853 to make it an internal-only DNS service.
+                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
+                    # --- MODIFICATION END ---
                     press_any_key;;
                 4)
                     read -p "確定要卸載 AdGuard Home 嗎? (y/N): " uninstall_choice < /dev/tty
@@ -732,7 +736,7 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v6.4.2)"
+echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v6.5.0)"
 echo "----------------------------------------------------------------"
 
 check_root
