@@ -304,6 +304,24 @@ ${dns_servers_block}
     ],
     "strategy": "prefer_ipv4"
   },
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "warp-out",
+      "system": false,
+      "mtu": 1280,
+      "address": [ "${ipv4_address}/32", "${ipv6_address}/128" ],
+      "private_key": "${private_key}",
+      "peers": [
+        {
+          "address": "162.159.192.1",
+          "port": 2408,
+          "public_key": "${public_key}",
+          "allowed_ips": [ "0.0.0.0/0", "::/0" ]
+        }
+      ]
+    }
+  ],
   "inbounds": [
     {
       "type": "hysteria2", "tag": "hysteria-in", "listen": "::", "listen_port": 443,
@@ -313,14 +331,6 @@ ${dns_servers_block}
     { "type": "socks", "tag": "socks-in", "listen": "0.0.0.0", "listen_port": 8008 }
   ],
   "outbounds": [
-    {
-      "type": "wireguard", "tag": "warp-out",
-      "local_address": [ "${ipv4_address}/32", "${ipv6_address}/128" ],
-      "private_key": "${private_key}",
-      "server": "162.159.192.1", "server_port": 2408,
-      "peer_public_key": "${public_key}",
-      "mtu": 1280
-    },
     {
       "type": "direct",
       "tag": "direct",
@@ -429,9 +439,9 @@ update_warp_keys() {
         log ERROR "無法從輸入中正確解析 IPv4 和 IPv6 地址。請檢查格式。"; return 1
     fi
     
-    # 使用 jq 安全地更新 JSON 文件，並重新拼接 CIDR
+    # 使用 jq 安全地更新 JSON 文件（針對新的 endpoints 格式）
     jq --arg pk "$private_key" --arg ip4 "${ipv4_address}/32" --arg ip6 "${ipv6_address}/128" \
-    '.outbounds |= map(if .tag == "warp-out" then .private_key = $pk | .local_address = [$ip4, $ip6] else . end)' \
+    '.endpoints |= map(if .tag == "warp-out" then .private_key = $pk | .address = [$ip4, $ip6] else . end)' \
     "$SINGBOX_CONFIG_FILE" > "${SINGBOX_CONFIG_FILE}.tmp" && mv "${SINGBOX_CONFIG_FILE}.tmp" "$SINGBOX_CONFIG_FILE"
 
     if [ $? -eq 0 ]; then 
