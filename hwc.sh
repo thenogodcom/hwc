@@ -337,8 +337,7 @@ ${dns_servers_block}
       "tcp_fast_open": true,
       "tcp_multi_path": false,
       "udp_fragment": false,
-      "connect_timeout": "5s",
-      "domain_strategy": "prefer_ipv4"
+      "connect_timeout": "5s"
     }
   ],
   "route": {
@@ -348,6 +347,7 @@ ${dns_servers_block}
       { "domain_suffix": [ "youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "github.com", "github.io", "githubassets.com", "githubusercontent.com" ], "outbound": "direct" }
     ],
     "final": "warp-out",
+    "default_domain_resolver": "adguard",
     "auto_detect_interface": true
   }
 }
