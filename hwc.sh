@@ -651,7 +651,7 @@ wait_for_container_ready() {
         case "$container" in
             "$ADGUARD_CONTAINER_NAME") if docker exec "$container" sh -c "timeout 1 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then ready=true; fi;;
             "$CADDY_CONTAINER_NAME") if docker logs "$container" 2>&1 | grep -q "serving initial configuration"; then ready=true; fi;;
-            "$SINGBOX_CONTAINER_NAME") if docker exec "$container" sh -c "timeout 2 curl -x socks5h://127.0.0.1:8008 -s --connect-timeout 2 https://www.cloudflare.com/cdn-cgi/trace > /dev/null 2>&1" 2>/dev/null; then ready=true; fi;;
+            "$SINGBOX_CONTAINER_NAME") ! docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "error|fatal|fail|failed" && ready=true;;
         esac
         if $ready; then echo ""; log INFO "✓ ${service_name} 已就緒"; return 0; fi
         echo -ne "."; sleep 1
