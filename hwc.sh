@@ -326,26 +326,6 @@ ${dns_servers_block}
       "tag": "direct",
       "tcp_fast_open": true,
       "tcp_multi_path": false,
-      "udp_fragment": false,
-      "connect_timeout": "5s",
-      "domain_strategy": "prefer_ipv4"
-    }
-  ],
-  "route": {
-    "rules": [
-      { "protocol": "dns", "outbound": "direct" },
-      { "ip_is_private": true, "outbound": "direct" },
-      { "domain_suffix": [ "youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "github.com", "github.io", "githubassets.com", "githubusercontent.com" ], "outbound": "direct" }
-    ],
-    "final": "warp-out",
-    "auto_detect_interface": true,
-    "default_domain_resolver": "local-dns"
-  }
-}
-EOF
-    log INFO "Sing-box 設定檔生成完畢。"; return 0
-}
-
 # 管理 Caddy
 manage_caddy() {
     if ! container_exists "$CADDY_CONTAINER_NAME"; then
