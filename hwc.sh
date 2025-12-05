@@ -303,6 +303,10 @@ ${dns_servers_block}
       { "type": "local", "tag": "local-dns" }
     ],
     "strategy": "prefer_ipv4"
+    "cache": {
+      "enabled": true,
+      "store": "memory"
+    }
   },
   "inbounds": [
     {
