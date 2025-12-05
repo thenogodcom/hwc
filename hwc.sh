@@ -251,17 +251,33 @@ generate_singbox_config() {
     
     local dns_servers_block
     if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
-        log INFO "檢測到 AdGuard Home，Sing-box 將使用 '${ADGUARD_CONTAINER_NAME}' 進行 DNS 解析。"
-        dns_servers_block=$(cat <<DNS
+        # 获取 AdGuard 的实际 IP 地址，避免 DNS 循环依赖
+        local AG_IP
+        AG_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null | awk '{print $1}')
+        
+        if [ -n "$AG_IP" ]; then
+            log INFO "檢測到 AdGuard Home (IP: ${AG_IP})，Sing-box 將使用此 IP 進行 DNS 解析。"
+            dns_servers_block=$(cat <<DNS
       {
         "type": "udp",
-        "server": "${ADGUARD_CONTAINER_NAME}",
+        "server": "${AG_IP}",
         "server_port": 53,
-        "tag": "adguard",
-        "domain_resolver": "local-dns"
+        "tag": "adguard"
       },
 DNS
 )
+        else
+            log WARN "無法獲取 AdGuard Home IP，回退到 Cloudflare DNS。"
+            dns_servers_block=$(cat <<DNS
+      {
+        "type": "https",
+        "server": "1.1.1.1",
+        "tag": "cloudflare",
+        "detour": "direct"
+      },
+DNS
+)
+        fi
     else
         log WARN "未檢測到運行的 AdGuard Home，Sing-box 將回退到 Cloudflare DNS。"
         dns_servers_block=$(cat <<DNS
@@ -301,10 +317,9 @@ ${dns_servers_block}
       "type": "wireguard", "tag": "warp-out",
       "local_address": [ "${ipv4_address}/32", "${ipv6_address}/128" ],
       "private_key": "${private_key}",
-      "server": "engage.cloudflareclient.com", "server_port": 2408,
+      "server": "162.159.192.1", "server_port": 2408,
       "peer_public_key": "${public_key}",
-      "mtu": 1280,
-      "domain_resolver": "local-dns"
+      "mtu": 1280
     },
     {
       "type": "direct",
