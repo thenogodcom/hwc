@@ -338,7 +338,8 @@ ${dns_servers_block}
       { "domain_suffix": [ "youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "github.com", "github.io", "githubassets.com", "githubusercontent.com" ], "outbound": "direct" }
     ],
     "final": "warp-out",
-    "auto_detect_interface": true
+    "auto_detect_interface": true,
+    "default_domain_resolver": "local-dns"
   }
 }
 EOF
