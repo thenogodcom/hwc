@@ -309,9 +309,14 @@ ${dns_servers_block}
       "type": "wireguard",
       "tag": "warp-out",
       "system": false,
-      "mtu": 1280,
-      "address": [ "${ipv4_address}/32", "${ipv6_address}/128" ],
+      "name": "wg0",
+      "mtu": 1408,
+      "address": [
+        "${ipv4_address}/32",
+        "${ipv6_address}/128"
+      ],
       "private_key": "${private_key}",
+      "listen_port": 10000,
       "peers": [
         {
           "address": "162.159.192.1",
@@ -320,6 +325,12 @@ ${dns_servers_block}
           "allowed_ips": [
             "0.0.0.0/0",
             "::/0"
+          ],
+          "persistent_keepalive_interval": 30,
+          "reserved": [
+            0,
+            0,
+            0
           ]
         }
       ]
