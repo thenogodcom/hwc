@@ -581,7 +581,7 @@ manage_adguard() {
             case "$choice" in
                 1)
                     log INFO "--- 正在安裝 AdGuard Home (內部DNS模式) ---"
-                    if lsof -i :53 -sTCP:LISTEN -t >/dev/null || lsof -i :53 -sUDP:LISTEN -t >/dev/null; then
+                    if lsof -i :53 -sTCP:LISTEN -t >/dev/null || lsof -i UDP:53 -t >/dev/null; then
                         log WARN "檢測到 53 端口已被佔用 (可能是 systemd-resolved)。"
                         read -p "是否嘗試停止 systemd-resolved? (y/N): " fix_port < /dev/tty
                         if [[ "$fix_port" =~ ^[yY]$ ]]; then
