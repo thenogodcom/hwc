@@ -278,7 +278,7 @@ ${dns_servers_block}
       "tag": "warp-out",
       "system": false,
       "name": "wg0",
-      "mtu": 1408,
+      "mtu": 1280,
       "address": [
         "${ipv4_address}/32",
         "${ipv6_address}/128"
