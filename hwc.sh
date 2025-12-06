@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Description: Ultimate All-in-One Manager for Caddy & Sing-box with self-installing shortcut.
+# Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.5.0 (Password Gen Fix Edition - AdGuard Removed)
+# Version: 6.5.0 (Password Gen Fix Edition - Internal DNS Mod)
 
 # --- 第1節:全域設定與定義 ---
 set -eo pipefail
@@ -26,6 +26,7 @@ log() {
 APP_BASE_DIR="/root/hwc"
 CADDY_CONTAINER_NAME="caddy-manager"; CADDY_IMAGE_NAME="caddy:latest"; CADDY_CONFIG_DIR="${APP_BASE_DIR}/caddy"; CADDY_CONFIG_FILE="${CADDY_CONFIG_DIR}/Caddyfile"; CADDY_DATA_VOLUME="hwc_caddy_data"
 SINGBOX_CONTAINER_NAME="sing-box"; SINGBOX_IMAGE_NAME="ghcr.io/sagernet/sing-box:latest"; SINGBOX_CONFIG_DIR="${APP_BASE_DIR}/singbox"; SINGBOX_CONFIG_FILE="${SINGBOX_CONFIG_DIR}/config.json"
+ADGUARD_CONTAINER_NAME="adguard-home"; ADGUARD_IMAGE_NAME="adguard/adguardhome:edge"; ADGUARD_CONFIG_DIR="${APP_BASE_DIR}/adguard/conf"; ADGUARD_WORK_DIR="${APP_BASE_DIR}/adguard/work"
 SHARED_NETWORK_NAME="hwc-proxy-net"
 SCRIPT_URL="https://raw.githubusercontent.com/thenogodcom/warp/main/hwc.sh"; SHORTCUT_PATH="/usr/local/bin/hwc"
 declare -A CONTAINER_STATUSES
@@ -46,7 +47,7 @@ self_install() {
     if ! command -v curl &>/dev/null; then
         log WARN "'curl' 未安裝,正在嘗試安裝..."
         if command -v apt-get &>/dev/null; then apt-get update && apt-get install -y --no-install-recommends curl; fi
-        if command -v yum &>/dev/null || command -v dnf &>/dev/null; then
+        if command -v yum &>/dev/null || command -v dnf &>/dev/null; then 
             command -v yum &>/dev/null && yum install -y curl
             command -v dnf &>/dev/null && dnf install -y curl
         fi
@@ -248,8 +249,26 @@ generate_singbox_config() {
     local cert_path_in_container="${cert_path/\/data/\/caddy_certs}"
     local key_path_in_container="${key_path/\/data/\/caddy_certs}"
     
-    log INFO "Sing-box 將使用 Cloudflare DNS 進行解析。"
-    local dns_servers_block=$(cat <<DNS
+    local dns_servers_block
+    if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
+        # 获取 AdGuard 的实际 IP 地址，避免 DNS 循环依赖
+        local AG_IP
+        AG_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null | awk '{print $1}')
+        
+        if [ -n "$AG_IP" ]; then
+            log INFO "檢測到 AdGuard Home (IP: ${AG_IP})，Sing-box 將使用此 IP 進行 DNS 解析。"
+            dns_servers_block=$(cat <<DNS
+      {
+        "type": "udp",
+        "server": "${AG_IP}",
+        "server_port": 53,
+        "tag": "adguard"
+      },
+DNS
+)
+        else
+            log WARN "無法獲取 AdGuard Home IP，回退到 Cloudflare DNS。"
+            dns_servers_block=$(cat <<DNS
       {
         "type": "https",
         "server": "1.1.1.1",
@@ -258,7 +277,20 @@ generate_singbox_config() {
       },
 DNS
 )
-
+        fi
+    else
+        log WARN "未檢測到運行的 AdGuard Home，Sing-box 將回退到 Cloudflare DNS。"
+        dns_servers_block=$(cat <<DNS
+      {
+        "type": "https",
+        "server": "1.1.1.1",
+        "tag": "cloudflare",
+        "detour": "direct"
+      },
+DNS
+)
+    fi
+    
     cat > "${SINGBOX_CONFIG_FILE}" <<EOF
 {
   "log": {
@@ -329,7 +361,7 @@ ${dns_servers_block}
       { "domain_suffix": [ "youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "github.com", "github.io", "githubassets.com", "githubusercontent.com" ], "outbound": "direct" }
     ],
     "final": "warp-out",
-    "default_domain_resolver": "cloudflare",
+    "default_domain_resolver": "adguard",
     "auto_detect_interface": true
   }
 }
@@ -540,10 +572,80 @@ manage_singbox() {
     fi
 }
 
+# 管理 AdGuard Home
+manage_adguard() {
+    if ! container_exists "$ADGUARD_CONTAINER_NAME"; then
+        while true; do
+            clear; log INFO "--- 管理 AdGuard Home (未安裝) ---"
+            echo " 1. 安裝 AdGuard Home (內部 DNS 過濾)"; echo " 0. 返回主選單"
+            read -p "請輸入選項: " choice < /dev/tty
+            case "$choice" in
+                1)
+                    log INFO "--- 正在安裝 AdGuard Home (內部DNS模式) ---"
+                    if lsof -i :53 -sTCP:LISTEN -t >/dev/null || lsof -i :53 -sUDP:LISTEN -t >/dev/null; then
+                        log WARN "檢測到 53 端口已被佔用 (可能是 systemd-resolved)。"
+                        read -p "是否嘗試停止 systemd-resolved? (y/N): " fix_port < /dev/tty
+                        if [[ "$fix_port" =~ ^[yY]$ ]]; then
+                            systemctl stop systemd-resolved &>/dev/null
+                            systemctl disable systemd-resolved &>/dev/null
+                            rm -f /etc/resolv.conf && echo "nameserver 8.8.8.8" > /etc/resolv.conf
+                            log INFO "已停止 systemd-resolved 並重置 resolv.conf。"
+                        fi
+                    fi
+                    log INFO "正在拉取最新的 AdGuard Home 鏡像..."; if ! docker pull "${ADGUARD_IMAGE_NAME}"; then log ERROR "鏡像拉取失敗。"; press_any_key; break; fi
+                    mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
+                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
+                    log INFO "正在部署 AdGuard Home 容器..."
+                    # --- MODIFICATION START ---
+                    # Removed port mappings for 53 and 853 to make it an internal-only DNS service.
+                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then
+                    # --- MODIFICATION END ---
+                        log INFO "AdGuard Home 部署成功。"
+                        log INFO "請立即訪問 http://<您的IP>:3000 進行初始化設置。"
+                        log WARN "【重要】在設置嚮導中,請將 '網頁管理界面' 的端口修改為 3000。"
+                    else
+                        log ERROR "AdGuard Home 部署失敗。"; docker rm -f "${ADGUARD_CONTAINER_NAME}" 2>/dev/null
+                    fi
+                    press_any_key; break;;
+                0) break;; *) log ERROR "無效輸入!"; sleep 1;;
+            esac
+        done
+    else
+        while true; do
+            clear; log INFO "--- 管理 AdGuard Home (已安裝) ---"
+            echo " 1. 查看日誌"; echo " 2. 重啟 AdGuard Home"; echo " 3. 更新 AdGuard Home"; echo " 4. 卸載 AdGuard Home"; echo " 0. 返回主選單"
+            read -p "請輸入選項: " choice < /dev/tty
+            case "$choice" in
+                1) docker logs -f "$ADGUARD_CONTAINER_NAME"; press_any_key;;
+                2) log INFO "正在重啟 AdGuard Home..."; docker restart "$ADGUARD_CONTAINER_NAME"; sleep 2;;
+                3)
+                    log INFO "正在更新 AdGuard Home..."
+                    docker pull "${ADGUARD_IMAGE_NAME}"
+                    docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
+                    # --- MODIFICATION START ---
+                    # Removed port mappings for 53 and 853 to make it an internal-only DNS service.
+                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
+                    # --- MODIFICATION END ---
+                    press_any_key;;
+                4)
+                    read -p "確定要卸載 AdGuard Home 嗎? (y/N): " uninstall_choice < /dev/tty
+                    if [[ "$uninstall_choice" =~ ^[yY]$ ]]; then
+                        docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
+                        rm -rf "${APP_BASE_DIR}/adguard"
+                        docker rmi -f "${ADGUARD_IMAGE_NAME}" &>/dev/null
+                        log INFO "AdGuard Home 已卸載。";
+                    fi
+                    press_any_key; break;;
+                0) break;; *) log ERROR "無效輸入!"; sleep 1;;
+            esac
+        done
+    fi
+}
+
 # 清除所有服務的日誌
 clear_all_logs() {
     log INFO "正在清除所有已安裝服務容器的內部日誌..."
-    for container in "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME"; do
+    for container in "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME"; do
         if container_exists "$container"; then
             log INFO "正在清除 ${container} 的日誌..."
             local log_path; log_path=$(docker inspect --format='{{.LogPath}}' "$container")
@@ -561,6 +663,7 @@ wait_for_container_ready() {
         if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]; then sleep 1; continue; fi
         local ready=false
         case "$container" in
+            "$ADGUARD_CONTAINER_NAME") if docker exec "$container" sh -c "timeout 1 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then ready=true; fi;;
             "$CADDY_CONTAINER_NAME") if docker logs "$container" 2>&1 | grep -q "serving initial configuration"; then ready=true; fi;;
             "$SINGBOX_CONTAINER_NAME") ! docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "error|fatal|fail|failed" && ready=true;;
         esac
@@ -573,7 +676,7 @@ wait_for_container_ready() {
 # 重啟所有正在運行的服務
 restart_all_services() {
     log INFO "正在按依賴順序重啟所有正在運行的容器..."
-    local restart_order=("$CADDY_CONTAINER_NAME:Caddy (SSL)" "$SINGBOX_CONTAINER_NAME:Sing-box (核心服務)")
+    local restart_order=("$ADGUARD_CONTAINER_NAME:AdGuard (DNS)" "$CADDY_CONTAINER_NAME:Caddy (SSL)" "$SINGBOX_CONTAINER_NAME:Sing-box (核心服務)")
     local restarted=0
     for item in "${restart_order[@]}"; do
         local container="${item%%:*}" service_name="${item#*:}"
@@ -593,23 +696,23 @@ clear_logs_and_restart_all() {
 }
 
 uninstall_all_services() {
-    log WARN "此操作將不可逆地刪除 Caddy, Sing-box 的所有相關數據！"
+    log WARN "此操作將不可逆地刪除 Caddy, Sing-box, AdGuard Home 的所有相關數據！"
     read -p "您確定要徹底清理所有服務嗎? (y/N): " choice < /dev/tty
     if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi
 
     log INFO "正在停止並刪除所有服務容器..."
-    docker stop "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" &>/dev/null
-    docker rm "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" &>/dev/null
+    docker stop "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME" &>/dev/null
+    docker rm "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME" &>/dev/null
     log INFO "正在刪除本地設定檔和數據..."; rm -rf "${APP_BASE_DIR}"
     log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null
     log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null
     log INFO "正在清除所有鏡像緩存..."
-    docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" &>/dev/null
+    docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null
     log INFO "所有服務已徹底清理完畢。"
 }
 
 check_all_status() {
-    local containers=("$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME")
+    local containers=("$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME")
     for container in "${containers[@]}"; do
         if ! container_exists "$container"; then
             CONTAINER_STATUSES["$container"]="${FontColor_Red}未安裝${FontColor_Suffix}"
@@ -623,22 +726,24 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box 終極管理腳本${FontColor_Suffix} (v6.5.0)"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.5.0)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
         echo -e "  Sing-box 服務     : ${CONTAINER_STATUSES[$SINGBOX_CONTAINER_NAME]}"
+        echo -e "  AdGuard Home 服務 : ${CONTAINER_STATUSES[$ADGUARD_CONTAINER_NAME]}"
         echo -e " --------------------------------------------------\n"
         echo -e " ${FontColor_Green}1.${FontColor_Suffix} 管理 Caddy..."
-        echo -e " ${FontColor_Green}2.${FontColor_Suffix} 管理 Sing-box (整合核心服務)...\n"
-        echo -e " ${FontColor_Yellow}3.${FontColor_Suffix} 清理日誌並重啟所有服務"
-        echo -e " ${FontColor_Red}4.${FontColor_Suffix} 徹底清理所有服務\n"
+        echo -e " ${FontColor_Green}2.${FontColor_Suffix} 管理 Sing-box (整合核心服務)..."
+        echo -e " ${FontColor_Green}3.${FontColor_Suffix} 管理 AdGuard Home...\n"
+        echo -e " ${FontColor_Yellow}4.${FontColor_Suffix} 清理日誌並重啟所有服務"
+        echo -e " ${FontColor_Red}5.${FontColor_Suffix} 徹底清理所有服務\n"
         echo -e " ${FontColor_Yellow}0.${FontColor_Suffix} 退出腳本\n"
-        read -p " 請輸入選項 [0-4]: " num < /dev/tty
+        read -p " 請輸入選項 [0-5]: " num < /dev/tty
         case "$num" in
-            1) manage_caddy;; 2) manage_singbox;;
-            3) clear_logs_and_restart_all; press_any_key;;
-            4) uninstall_all_services; press_any_key;;
+            1) manage_caddy;; 2) manage_singbox;; 3) manage_adguard;;
+            4) clear_logs_and_restart_all; press_any_key;;
+            5) uninstall_all_services; press_any_key;;
             0) exit 0;;
             *) log ERROR "無效輸入!"; sleep 2;;
         esac
@@ -655,7 +760,7 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + Sing-box 終極一鍵管理腳本${FontColor_Suffix} (v6.5.0)"
+echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v6.5.0)"
 echo "----------------------------------------------------------------"
 
 check_root
