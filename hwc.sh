@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box (Hysteria2+WARP) & AdGuard Home.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 7.0.1 (Legacy Pull Logic)
+# Version: 7.0.2 (Final Fix Edition)
 
 # --- 第1節:全域設定與定義 ---
 set -eo pipefail
@@ -296,9 +296,13 @@ manage_caddy() {
                     read -p "請輸入代理域名 (偽裝站點, 可選): " PROXY_DOMAIN < /dev/tty
                     if [ -n "$PROXY_DOMAIN" ] && ! validate_domain "$PROXY_DOMAIN"; then press_any_key; continue; fi
                     read -p "是否為 Caddy 啟用詳細日誌？(y/N): " LOG_MODE < /dev/tty
+                    
+                    # MODIFIED: Moved directory creation before pulling the image
                     generate_caddy_config "$PRIMARY_DOMAIN" "$EMAIL" "$LOG_MODE" "$PROXY_DOMAIN" "$BACKEND_SERVICE"
+                    
                     log INFO "正在拉取最新的 Caddy 鏡像..."
-                    docker pull "${CADDY_IMAGE_NAME}" # MODIFIED: Removed return code check
+                    docker pull "${CADDY_IMAGE_NAME}"
+                    
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     if docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}"; then
                         log INFO "Caddy 部署成功,正在後台申請證書..."
@@ -363,6 +367,8 @@ manage_singbox() {
                     local private_key ipv4_address ipv6_address public_key
                     read -p "是否自動生成新的 WARP 帳戶？(Y/n): " AUTO_WARP < /dev/tty
                     if [[ ! "$AUTO_WARP" =~ ^[nN]$ ]]; then
+                        # MODIFIED: Moved directory creation before pulling the image
+                        mkdir -p "${SINGBOX_CONFIG_DIR}"
                         if ! generate_warp_conf; then press_any_key; break; fi
                         private_key=$(grep -oP 'PrivateKey = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
                         public_key=$(grep -oP 'PublicKey = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
@@ -380,9 +386,12 @@ manage_singbox() {
                         if [ -z "$ipv4_address" ] || [ -z "$ipv6_address" ]; then log ERROR "無法從輸入中正確解析 IP 地址，安裝中止。"; press_any_key; break; fi
                         public_key="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
                     fi
-                    log INFO "正在拉取最新的 Sing-box 鏡像..."
-                    docker pull "${SINGBOX_IMAGE_NAME}" # MODIFIED: Removed return code check
+                    
                     if ! generate_singbox_config "$HY_DOMAIN" "$PASSWORD" "$private_key" "$ipv4_address" "$ipv6_address" "$public_key" "$SINGBOX_LOG_LEVEL"; then log ERROR "Sing-box 設定檔生成失敗,安裝中止。"; press_any_key; break; fi
+                    
+                    log INFO "正在拉取最新的 Sing-box 鏡像..."
+                    docker pull "${SINGBOX_IMAGE_NAME}"
+                    
                     log INFO "正在部署 Sing-box 容器..."
                     if docker run -d --name "${SINGBOX_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --cap-add NET_ADMIN -p 443:443/udp -p 8008:8080/tcp -v "${SINGBOX_CONFIG_FILE}:/etc/sing-box/config.json:ro" -v "${CADDY_DATA_VOLUME}:/caddy_certs:ro" "${SINGBOX_IMAGE_NAME}" run -c /etc/sing-box/config.json; then
                         log INFO "Sing-box 部署成功。"
@@ -434,9 +443,13 @@ manage_adguard() {
                             log INFO "已停止 systemd-resolved 並重置 resolv.conf。"
                         fi
                     fi
-                    log INFO "正在拉取最新的 AdGuard Home 鏡像..."
-                    docker pull "${ADGUARD_IMAGE_NAME}" # MODIFIED: Removed return code check
+                    
+                    # MODIFIED: Moved directory creation before pulling the image to prevent script termination issue.
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
+                    
+                    log INFO "正在拉取最新的 AdGuard Home 鏡像..."
+                    docker pull "${ADGUARD_IMAGE_NAME}"
+                    
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     log INFO "正在部署 AdGuard Home 容器..."
                     if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then
@@ -457,7 +470,7 @@ manage_adguard() {
                 2) log INFO "正在重啟 AdGuard Home..."; docker restart "$ADGUARD_CONTAINER_NAME"; sleep 2;;
                 3)
                     log INFO "正在更新 AdGuard Home..."
-                    docker pull "${ADGUARD_IMAGE_NAME}" # MODIFIED: Removed return code check
+                    docker pull "${ADGUARD_IMAGE_NAME}"
                     docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
                     if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
                     press_any_key;;
@@ -546,7 +559,7 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box (Hysteria2+WARP) + AdGuard 終極管理腳本${FontColor_Suffix} (v7.0.1)"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box (Hysteria2+WARP) + AdGuard 終極管理腳本${FontColor_Suffix} (v7.0.2)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -580,7 +593,7 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + Sing-box (Hysteria2+WARP) + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v7.0.1)"
+echo -e "${FontColor_Purple}Caddy + Sing-box (Hysteria2+WARP) + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v7.0.2)"
 echo "----------------------------------------------------------------"
 
 check_root
