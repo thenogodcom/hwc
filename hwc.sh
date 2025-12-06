@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.5.2 (Network Cleanup Feature)
+# Version: 6.5.3 (Syntax Fix: esabox -> esac)
 
 # --- 第1節:全域設定與定義 ---
 set -eo pipefail
@@ -570,7 +570,7 @@ manage_singbox() {
                     fi
                     press_any_key; break;;
                 0) break;; *) log ERROR "無效輸入!"; sleep 1;;
-            esabox
+            esac # <--- 修正: 這裡之前是 esabox
         done
     fi
 }
@@ -737,7 +737,7 @@ cleanup_and_recreate_network() {
     done
 
     if [ ${#found_containers[@]} -eq 0 ]; then
-        log WARN "未找到任何正在運行的 HWC 相關容器。";
+        log WARN "未找到任何已安裝的 HWC 相關容器。";
     fi
     
     log INFO "2/4 等待 3 秒確保連接完全釋放..."
@@ -760,7 +760,6 @@ cleanup_and_recreate_network() {
     for container in "${found_containers[@]}"; do
         log INFO " - 啟動並連接 $container..."
         # 由於容器在創建時已經指定了網絡，通常只需重新啟動，Docker 會自動將其連接回同名的網絡。
-        # 為了保險，我們檢查一下，並嘗試重啟
         if docker start "$container" &>/dev/null; then
              wait_for_container_ready "$container" "$container" 10 &>/dev/null
              log INFO " - $container 已重啟並連接。"
@@ -792,7 +791,7 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.5.2)"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.5.3)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -803,7 +802,7 @@ start_menu() {
         echo -e " ${FontColor_Green}2.${FontColor_Suffix} 管理 Sing-box (整合核心服務)..."
         echo -e " ${FontColor_Green}3.${FontColor_Suffix} 管理 AdGuard Home...\n"
         echo -e " ${FontColor_Yellow}4.${FontColor_Suffix} 清理日誌並重啟所有服務"
-        echo -e " ${FontColor_Yellow}6.${FontColor_Suffix} 一鍵淨化共享網絡 (修復網路問題)" # 新增選項
+        echo -e " ${FontColor_Yellow}6.${FontColor_Suffix} 一鍵淨化共享網絡 (修復網路問題)"
         echo -e " ${FontColor_Red}5.${FontColor_Suffix} 徹底清理所有服務\n"
         echo -e " ${FontColor_Yellow}0.${FontColor_Suffix} 退出腳本\n"
         read -p " 請輸入選項 [0-6]: " num < /dev/tty
@@ -811,7 +810,7 @@ start_menu() {
             1) manage_caddy;; 2) manage_singbox;; 3) manage_adguard;;
             4) clear_logs_and_restart_all; press_any_key;;
             5) uninstall_all_services; press_any_key;;
-            6) cleanup_and_recreate_network; press_any_key;; # 執行新功能
+            6) cleanup_and_recreate_network; press_any_key;;
             0) exit 0;;
             *) log ERROR "無效輸入!"; sleep 2;;
         esac
@@ -828,7 +827,7 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v6.5.2)"
+echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v6.5.3)"
 echo "----------------------------------------------------------------"
 
 check_root
