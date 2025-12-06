@@ -309,24 +309,23 @@ ${dns_servers_block}
       "type": "wireguard",
       "tag": "warp-out",
       "system": false,
-      "name": "wg0",
       "mtu": 1280,
       "address": [
         "${ipv4_address}/32",
         "${ipv6_address}/128"
       ],
       "private_key": "${private_key}",
-      "listen_port": 10000,
+      "listen_port": 0,
       "peers": [
         {
-          "address": "162.159.192.1",
+          "address": "engage.cloudflareclient.com",
           "port": 2408,
           "public_key": "${public_key}",
           "allowed_ips": [
             "0.0.0.0/0",
             "::/0"
           ],
-          "persistent_keepalive_interval": 30,
+          "persistent_keepalive_interval": 25,
           "reserved": [
             0,
             0,
