@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.5.0 (Password Gen Fix Edition - Internal DNS Mod)
+# Version: 6.6.0 (Robust Edition)
 
 # --- 第1節:全域設定與定義 ---
 set -eo pipefail
@@ -249,14 +249,14 @@ generate_singbox_config() {
     local cert_path_in_container="${cert_path/\/data/\/caddy_certs}"
     local key_path_in_container="${key_path/\/data/\/caddy_certs}"
     
-    local dns_servers_block
+    local dns_servers_block; local dns_resolver_tag="cloudflare"
     if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
-        # 获取 AdGuard 的实际 IP 地址，避免 DNS 循环依赖
         local AG_IP
         AG_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null | awk '{print $1}')
         
         if [ -n "$AG_IP" ]; then
             log INFO "檢測到 AdGuard Home (IP: ${AG_IP})，Sing-box 將使用此 IP 進行 DNS 解析。"
+            dns_resolver_tag="adguard"
             dns_servers_block=$(cat <<DNS
       {
         "type": "udp",
@@ -360,7 +360,7 @@ ${dns_servers_block}
       { "domain_suffix": [ "youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "github.com", "github.io", "githubassets.com", "githubusercontent.com" ], "outbound": "direct" }
     ],
     "final": "warp-out",
-    "default_domain_resolver": "adguard",
+    "default_domain_resolver": "${dns_resolver_tag}",
     "auto_detect_interface": true
   }
 }
@@ -581,7 +581,7 @@ manage_adguard() {
             case "$choice" in
                 1)
                     log INFO "--- 正在安裝 AdGuard Home (內部DNS模式) ---"
-                    if lsof -i :53 -sTCP:LISTEN -t >/dev/null || lsof -i UDP:53 -t >/dev/null; then
+                    if ss -tuln | awk '{print $5}' | grep -qE ':53$' >/dev/null; then
                         log WARN "檢測到 53 端口已被佔用 (可能是 systemd-resolved)。"
                         read -p "是否嘗試停止 systemd-resolved? (y/N): " fix_port < /dev/tty
                         if [[ "$fix_port" =~ ^[yY]$ ]]; then
@@ -595,10 +595,7 @@ manage_adguard() {
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
                     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
                     log INFO "正在部署 AdGuard Home 容器..."
-                    # --- MODIFICATION START ---
-                    # Removed port mappings for 53 and 853 to make it an internal-only DNS service.
                     if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then
-                    # --- MODIFICATION END ---
                         log INFO "AdGuard Home 部署成功。"
                         log INFO "請立即訪問 http://<您的IP>:3000 進行初始化設置。"
                         log WARN "【重要】在設置嚮導中,請將 '網頁管理界面' 的端口修改為 3000。"
@@ -621,10 +618,7 @@ manage_adguard() {
                     log INFO "正在更新 AdGuard Home..."
                     docker pull "${ADGUARD_IMAGE_NAME}"
                     docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
-                    # --- MODIFICATION START ---
-                    # Removed port mappings for 53 and 853 to make it an internal-only DNS service.
                     if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
-                    # --- MODIFICATION END ---
                     press_any_key;;
                 4)
                     read -p "確定要卸載 AdGuard Home 嗎? (y/N): " uninstall_choice < /dev/tty
@@ -725,7 +719,7 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.5.0)"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.6.0)"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -759,7 +753,7 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v6.5.0)"
+echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v6.6.0)"
 echo "----------------------------------------------------------------"
 
 check_root
