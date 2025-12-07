@@ -258,7 +258,7 @@ wait_for_container_ready() {
 }
 
 cleanup_and_recreate_network() {
-    log WARN "此操作將停止所有 HWC 相關容器，刪除並重建共享網路 (${SHARED_NETWORK_NAME})，然後重新啟動容器。"
+    log WARN "此操作將停止所有 HWC 相關容器，清空其日誌，刪除並重建共享網路 (${SHARED_NETWORK_NAME})，然後重新啟動容器。"
     read -p "您確定要執行 '一鍵淨化共享網絡' 嗎? (y/N): " choice < /dev/tty
     if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi
 
@@ -273,16 +273,24 @@ cleanup_and_recreate_network() {
     local containers_to_process=("$ADGUARD_CONTAINER_NAME" "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME")
     local found_containers=()
 
-    log INFO "1/5 正在停止所有 HWC 相關容器..."
+    log INFO "1/6 正在清空並停止所有 HWC 相關容器..."
     for container in "${containers_to_process[@]}"; do
         if container_exists "$container"; then
+            # 新增：清空日志
+            log INFO " - 清空容器日志: $container"
+            local log_path; log_path=$(docker inspect --format='{{.LogPath}}' "$container")
+            if [ -f "$log_path" ]; then
+                truncate -s 0 "$log_path" || log WARN "   - 无法清空 ${container} 的日志文件。"
+            fi
+            
+            # 停止容器
             log INFO " - 停止容器: $container"; docker stop "$container" &>/dev/null || log WARN "無法停止 $container"; found_containers+=("$container")
         fi
     done
 
     if [ ${#found_containers[@]} -eq 0 ]; then log WARN "未找到任何已安裝的 HWC 相關容器。"; return; fi
-    log INFO "2/5 等待 3 秒確保連接完全釋放..."; sleep 3
-    log INFO "3/5 刪除並重建共享網路 (${SHARED_NETWORK_NAME})..."
+    log INFO "2/6 等待 3 秒確保連接完全釋放..."; sleep 3
+    log INFO "3/6 刪除並重建共享網路 (${SHARED_NETWORK_NAME})..."
     for container in "${found_containers[@]}"; do
         docker network disconnect -f "${SHARED_NETWORK_NAME}" "${container}" &>/dev/null || true
     done
@@ -290,19 +298,18 @@ cleanup_and_recreate_network() {
     if docker network create "${SHARED_NETWORK_NAME}" &>/dev/null; then log INFO " - 新網路 ${SHARED_NETWORK_NAME} 已重建成功。"; else log ERROR " - 網路重建失敗，操作中止！"; return 1; fi
     
     local restart_order=("$ADGUARD_CONTAINER_NAME" "$CADDY_CONTAINER_NAME")
-    log INFO "4/5 正在按順序啟動基礎服務 (AdGuard, Caddy)..."
+    log INFO "4/6 正在按順序啟動基礎服務 (AdGuard, Caddy)..."
     for container in "${restart_order[@]}"; do
         if [[ " ${found_containers[*]} " =~ " ${container} " ]]; then
             log INFO " - 連接並啟動 ${container}..."; docker network connect "${SHARED_NETWORK_NAME}" "${container}" &>/dev/null
             if docker start "${container}" &>/dev/null; then
-                # 使用 || true 来捕获失败状态，防止脚本退出
                 wait_for_container_ready "$container" "$container" 20 || true
             else log ERROR " - ${container} 啟動失敗。"; fi
         fi
     done
 
     if [[ " ${found_containers[*]} " =~ " ${SINGBOX_CONTAINER_NAME} " ]]; then
-        log INFO "5/5 正在動態更新 Sing-box 配置並啟動核心服務..."
+        log INFO "5/6 正在動態更新 Sing-box 配置並啟動核心服務..."
         if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME")" = "true" ]; then
             local NEW_AG_IP; NEW_AG_IP=$(docker inspect -f "{{ index .NetworkSettings.Networks \"${SHARED_NETWORK_NAME}\" \"IPAddress\" }}" "$ADGUARD_CONTAINER_NAME" 2>/dev/null)
             if [ -n "$NEW_AG_IP" ]; then
@@ -319,11 +326,11 @@ cleanup_and_recreate_network() {
             fi
         fi
         
+        log INFO "6/6 核心服務啟動..."
         log INFO " - 等待 5 秒，確保依賴服務稳定..."; sleep 5
         log INFO " - 連接並啟動 ${SINGBOX_CONTAINER_NAME}..."
         docker network connect "${SHARED_NETWORK_NAME}" "${SINGBOX_CONTAINER_NAME}" &>/dev/null
         if docker start "${SINGBOX_CONTAINER_NAME}" &>/dev/null; then
-             # 关键修改: 使用 if ! ... 结构捕获失败状态，防止脚本退出
              if ! wait_for_container_ready "${SINGBOX_CONTAINER_NAME}" "Sing-box" 45; then
                 log WARN "Sing-box 自動重啟後未能立即就緒，脚本将继续执行。"
              fi
