@@ -726,7 +726,7 @@ uninstall_all_services() {
 }
 
 # 淨化共享網絡
-# [FINAL-FIX] cleanup_and_recreate_network 函數 - 增加網絡解綁與更新邏輯
+# [FINAL-FIX-V4] cleanup_and_recreate_network 函數 - 增加時序延遲
 cleanup_and_recreate_network() {
     log WARN "此操作將停止所有 HWC 相關容器，刪除並重建共享網路 (${SHARED_NETWORK_NAME})，然後重新啟動容器。"
     read -p "您確定要執行 '一鍵淨化共享網絡' 嗎? (y/N): " choice < /dev/tty
@@ -760,7 +760,6 @@ cleanup_and_recreate_network() {
     sleep 3
 
     log INFO "3/5 刪除並重建共享網路 (${SHARED_NETWORK_NAME})..."
-    # 强制斷開所有找到的容器與舊網絡的連接，忽略錯誤
     for container in "${found_containers[@]}"; do
         docker network disconnect -f "${SHARED_NETWORK_NAME}" "${container}" &>/dev/null || true
     done
@@ -778,7 +777,7 @@ cleanup_and_recreate_network() {
             log INFO " - 連接並啟動 ${container}..."
             docker network connect "${SHARED_NETWORK_NAME}" "${container}" &>/dev/null
             if docker start "${container}" &>/dev/null; then
-                wait_for_container_ready "$container" "$container" 15
+                wait_for_container_ready "$container" "$container" 20
             else
                 log ERROR " - ${container} 啟動失敗。"
             fi
@@ -790,25 +789,34 @@ cleanup_and_recreate_network() {
         if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME")" = "true" ]; then
             local NEW_AG_IP
             NEW_AG_IP=$(docker inspect -f "{{.NetworkSettings.Networks.${SHARED_NETWORK_NAME}.IPAddress}}" "$ADGUARD_CONTAINER_NAME" 2>/dev/null)
+            
             if [ -n "$NEW_AG_IP" ]; then
-                log INFO " - 檢測到 AdGuard Home 新 IP: ${NEW_AG_IP}。正在使用 jq 更新 Sing-box 配置文件..."
-                jq --arg new_ip "$NEW_AG_IP" \
-                   '(.dns.servers[] | select(.tag == "adguard")).server = $new_ip' \
-                   "${SINGBOX_CONFIG_FILE}" > "${SINGBOX_CONFIG_FILE}.tmp" && \
-                   mv "${SINGBOX_CONFIG_FILE}.tmp" "${SINGBOX_CONFIG_FILE}"
-                if [ $? -eq 0 ]; then log INFO " - 配置文件更新成功。"; else log ERROR " - 配置文件更新失敗！"; fi
-            else
-                log WARN " - 無法獲取 AdGuard Home 的新 IP，Sing-box 可能無法正確解析 DNS。"
+                log INFO " - 檢測到 AdGuard Home 新 IP: ${NEW_AG_IP}。正在更新 Sing-box 配置文件..."
+                if ! jq empty "${SINGBOX_CONFIG_FILE}" >/dev/null 2>&1; then
+                    log ERROR " - Sing-box 配置文件不是有效的 JSON 文件！操作中止。"
+                else
+                    if jq -e 'any(.dns.servers[]; .tag == "adguard")' "${SINGBOX_CONFIG_FILE}" >/dev/null; then
+                        jq --arg new_ip "$NEW_AG_IP" '(.dns.servers[] | select(.tag == "adguard")).server = $new_ip' "${SINGBOX_CONFIG_FILE}" > "${SINGBOX_CONFIG_FILE}.tmp" && mv "${SINGBOX_CONFIG_FILE}.tmp" "${SINGBOX_CONFIG_FILE}"
+                    else
+                        local adguard_server_obj; adguard_server_obj=$(jq -n --arg ip "$NEW_AG_IP" '{type: "udp", server: $ip, server_port: 53, tag: "adguard"}')
+                        jq --argjson obj "$adguard_server_obj" '.dns.servers = [$obj] + .dns.servers' "${SINGBOX_CONFIG_FILE}" > "${SINGBOX_CONFIG_FILE}.tmp" && mv "${SINGBOX_CONFIG_FILE}.tmp" "${SINGBOX_CONFIG_FILE}"
+                    fi
+                    if [ $? -eq 0 ]; then log INFO " - 配置文件更新成功。"; else log ERROR " - 配置文件更新失敗！"; fi
+                fi
             fi
         fi
         
+        # --- 关键修改 ---
+        log INFO " - 等待 5 秒，確保依賴服務 (特别是 AdGuard DNS) 完全稳定..."
+        sleep 5
+        # --- 修改结束 ---
+
         log INFO " - 連接並啟動 ${SINGBOX_CONTAINER_NAME}..."
-        # 關鍵：在啟動前，將 sing-box 連接到新的網絡
         docker network connect "${SHARED_NETWORK_NAME}" "${SINGBOX_CONTAINER_NAME}" &>/dev/null
         if docker start "${SINGBOX_CONTAINER_NAME}" &>/dev/null; then
-             wait_for_container_ready "${SINGBOX_CONTAINER_NAME}" "${SINGBOX_CONTAINER_NAME}" 15
+             wait_for_container_ready "${SINGBOX_CONTAINER_NAME}" "${SINGBOX_CONTAINER_NAME}" 20
         else
-            log ERROR " - ${SINGBOX_CONTAINER_NAME} 啟動失敗。"
+            log ERROR " - ${SINGBOX_CONTAINER_NAME} 啟動失敗。请手动重启或检查日志: docker logs sing-box"
         fi
     fi
     
