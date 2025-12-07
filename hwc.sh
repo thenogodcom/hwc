@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.5.5 (Caddy Domain Logic & Uninstall Robustness Fix)
+# Version: 6.5.6 (Sing-box WARP Config Optimization)
 
 # --- 第1節:全域設定與定義 ---
 set -eo pipefail
@@ -162,7 +162,7 @@ connect_to_shared_network() {
     fi
 }
 
-# [MODIFIED] 生成 Caddyfile 的邏輯更新
+# Caddyfile 生成邏輯
 generate_caddy_config() {
     local primary_domain="$1" email="$2" log_mode="$3" proxy_domain="$4" backend_service="$5"
     mkdir -p "${CADDY_CONFIG_DIR}"
@@ -198,7 +198,6 @@ ${global_log_block}
     }
 }
 EOF
-    # 只有當主域名非空時才為其生成服務塊
     if [ -n "$primary_domain" ]; then
         cat >> "${CADDY_CONFIG_FILE}" <<EOF
 ${primary_domain} {
@@ -207,9 +206,6 @@ ${primary_domain} {
 }
 EOF
     fi
-
-    # 代理域名是必選的，所以它總會有一個服務塊
-    # 如果主域名為空，則代理到後端；否則代理到主域名
     local proxy_target="${primary_domain:-${backend_service}}"
     cat >> "${CADDY_CONFIG_FILE}" <<EOF
 ${proxy_domain} {
@@ -220,8 +216,7 @@ EOF
     log INFO "已為域名 ${proxy_domain}$([ -n "$primary_domain" ] && echo " 和 ${primary_domain}") 建立 Caddyfile。"
 }
 
-
-# 使用 wgcf 自動註冊並生成 WARP 設定檔 (最終穩定版)
+# wgcf WARP 配置生成邏輯
 generate_warp_conf() {
     log INFO "正在使用 wgcf 註冊新的 WARP 帳戶 (動態下載最新版)..."
     local arch
@@ -252,19 +247,23 @@ generate_warp_conf() {
     log INFO "WARP 帳戶和設定檔已成功生成。"
 }
 
-# 生成 Sing-box 設定檔
+# [MODIFIED] Sing-box 配置生成邏輯更新
 generate_singbox_config() {
     local domain="$1" password="$2" private_key="$3" ipv4_address="$4" ipv6_address="$5" public_key="$6" log_level="${7:-error}"
     mkdir -p "${SINGBOX_CONFIG_DIR}"
+    
     local cert_path_info; cert_path_info=$(detect_cert_path "$domain")
     local cert_path="${cert_path_info%%|*}"; local key_path="${cert_path_info##*|}"
     local cert_path_in_container="${cert_path/\/data/\/caddy_certs}"
     local key_path_in_container="${key_path/\/data/\/caddy_certs}"
+    
     local dns_servers_block
     local dns_resolver_tag="cloudflare"
+
     if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
         local AG_IP
         AG_IP=$(docker inspect -f "{{.NetworkSettings.Networks.${SHARED_NETWORK_NAME}.IPAddress}}" "$ADGUARD_CONTAINER_NAME" 2>/dev/null)
+        
         if [ -n "$AG_IP" ]; then
             log INFO "檢測到 AdGuard Home (IP: ${AG_IP})，Sing-box 將使用此 IP 進行 DNS 解析。"
             dns_resolver_tag="adguard"
@@ -286,23 +285,47 @@ DNS
 DNS
 )
     fi
+    
     cat > "${SINGBOX_CONFIG_FILE}" <<EOF
 {
-  "log": { "level": "${log_level}", "timestamp": true },
+  "log": {
+    "level": "${log_level}",
+    "timestamp": true
+  },
   "dns": {
-    "servers": [ ${dns_servers_block} { "type": "local", "tag": "local-dns" } ],
+    "servers": [
+${dns_servers_block}
+      { "type": "local", "tag": "local-dns" }
+    ],
     "strategy": "prefer_ipv4"
   },
   "endpoints": [
     {
-      "type": "wireguard", "tag": "warp-out", "system": false, "name": "wg0", "mtu": 1408,
-      "address": [ "${ipv4_address}/32", "${ipv6_address}/128" ],
-      "private_key": "${private_key}", "listen_port": 10000,
+      "type": "wireguard",
+      "tag": "warp-out",
+      "system": false,
+      "mtu": 1280,
+      "address": [
+        "${ipv4_address}/32",
+        "${ipv6_address}/128"
+      ],
+      "private_key": "${private_key}",
+      "listen_port": 0,
       "peers": [
         {
-          "address": "162.159.192.1", "port": 2408, "public_key": "${public_key}",
-          "allowed_ips": [ "0.0.0.0/0", "::/0" ],
-          "persistent_keepalive_interval": 30, "reserved": [ 0, 0, 0 ]
+          "address": "engage.cloudflareclient.com",
+          "port": 2408,
+          "public_key": "${public_key}",
+          "allowed_ips": [
+            "0.0.0.0/0",
+            "::/0"
+          ],
+          "persistent_keepalive_interval": 30,
+          "reserved": [
+            0,
+            0,
+            0
+          ]      
         }
       ]
     }
@@ -316,7 +339,14 @@ DNS
     { "type": "socks", "tag": "socks-in", "listen": "0.0.0.0", "listen_port": 8008 }
   ],
   "outbounds": [
-    { "type": "direct", "tag": "direct", "tcp_fast_open": true, "tcp_multi_path": false, "udp_fragment": false, "connect_timeout": "5s" }
+    {
+      "type": "direct",
+      "tag": "direct",
+      "tcp_fast_open": true,
+      "tcp_multi_path": false,
+      "udp_fragment": false,
+      "connect_timeout": "5s"
+    }
   ],
   "route": {
     "rules": [
@@ -330,10 +360,11 @@ DNS
   }
 }
 EOF
-    log INFO "Sing-box 設定檔生成完畢。"
+    log INFO "Sing-box 優化設定檔生成完畢。"
 }
 
-# [MODIFIED] 更新 Caddy 域名輸入邏輯
+
+# Caddy 管理
 manage_caddy() {
     if ! container_exists "$CADDY_CONTAINER_NAME"; then
         while true; do
@@ -400,7 +431,7 @@ manage_caddy() {
     fi
 }
 
-# 手動更新 WARP 金鑰 (智能解析版)
+# WARP 金鑰更新
 update_warp_keys() {
     if [ ! -f "$SINGBOX_CONFIG_FILE" ]; then log ERROR "Sing-box 設定檔 ${SINGBOX_CONFIG_FILE} 不存在。"; return 1; fi
     if ! command -v jq &>/dev/null; then
@@ -432,7 +463,7 @@ update_warp_keys() {
     fi
 }
 
-# 管理 Sing-box
+# Sing-box 管理
 manage_singbox() {
     if ! container_exists "$SINGBOX_CONTAINER_NAME"; then
         while true; do
@@ -532,7 +563,7 @@ manage_singbox() {
     fi
 }
 
-# 管理 AdGuard Home
+# AdGuard Home 管理
 manage_adguard() {
     if ! container_exists "$ADGUARD_CONTAINER_NAME"; then
         while true; do
@@ -607,7 +638,7 @@ manage_adguard() {
     fi
 }
 
-# 清除所有服務的日誌
+# 日誌清理
 clear_all_logs() {
     log INFO "正在清除所有已安裝服務容器的內部日誌..."
     for container in "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME"; do
@@ -620,7 +651,7 @@ clear_all_logs() {
     log INFO "所有服務日誌已清空。"
 }
 
-# 檢查容器是否就緒
+# 容器就緒檢查
 wait_for_container_ready() {
     local container="$1" service_name="$2" max_wait="${3:-30}"
     log INFO "等待 ${service_name} 就緒..."
@@ -641,7 +672,7 @@ wait_for_container_ready() {
     echo ""; return 1
 }
 
-# 重啟所有正在運行的服務
+# 重啟所有服務
 restart_all_services() {
     log INFO "正在按依賴順序重啟所有正在運行的容器 (AdGuard -> Caddy -> Sing-box)..."
     local restart_order=("$ADGUARD_CONTAINER_NAME:AdGuard (DNS)" "$CADDY_CONTAINER_NAME:Caddy (SSL)" "$SINGBOX_CONTAINER_NAME:Sing-box (核心服務)")
@@ -663,7 +694,7 @@ clear_logs_and_restart_all() {
     clear_all_logs; log INFO "3秒後將自動重啟所有服務..."; sleep 3; restart_all_services
 }
 
-# [MODIFIED] 卸載邏輯增強
+# 卸載所有服務
 uninstall_all_services() {
     log WARN "此操作將不可逆地刪除 Caddy, Sing-box, AdGuard Home 的所有相關數據！"
     read -p "您確定要徹底清理所有服務嗎? (y/N): " choice < /dev/tty
@@ -673,7 +704,6 @@ uninstall_all_services() {
     local containers_to_remove=("$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME")
     local container_ids=""
     for name in "${containers_to_remove[@]}"; do
-        # -a 顯示所有, -q 只顯示ID, --filter 按名稱過濾
         id=$(docker ps -a -q --filter "name=^/${name}$")
         if [ -n "$id" ]; then
             container_ids+="$id "
@@ -691,12 +721,11 @@ uninstall_all_services() {
     log INFO "正在刪除本地設定檔和數據..."; rm -rf "${APP_BASE_DIR}"
     log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null || true
     log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null || true
-    log INFO "正在清除所有鏡像緩存..."
-    docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null || true
+    log INFO "正在清除所有鏡像緩存..."; docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null || true
     log INFO "所有服務已徹底清理完畢。"
 }
 
-# --- 新增功能：一鍵淨化共享網絡 ---
+# 淨化共享網絡
 cleanup_and_recreate_network() {
     log WARN "此操作將停止所有 HWC 相關容器，刪除並重建共享網路 (${SHARED_NETWORK_NAME})，然後重新啟動容器。"
     read -p "您確定要執行 '一鍵淨化共享網絡' 嗎? (y/N): " choice < /dev/tty
@@ -737,8 +766,6 @@ cleanup_and_recreate_network() {
     local restart_success=true
     for container in "${found_containers[@]}"; do
         log INFO " - 啟動並連接 $container..."
-        # 由於我們修改了安裝邏輯，容器不再在創建時綁定網絡
-        # 所以這裡的邏輯變為：先連接網絡，再啟動
         docker network connect "${SHARED_NETWORK_NAME}" "$container" &>/dev/null || true
         if docker start "$container" &>/dev/null; then
              wait_for_container_ready "$container" "$container" 10 &>/dev/null
@@ -751,11 +778,10 @@ cleanup_and_recreate_network() {
     
     if $restart_success; then
         log INFO "✅ 共享網絡淨化與所有服務重啟完成。"
-        log WARN "注意：Sing-box 可能需要額外幾秒鐘才能透過 AdGuard Home 解析 DNS。"
     fi
 }
-# --- 結束新增功能 ---
 
+# 檢查所有服務狀態
 check_all_status() {
     local containers=("$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME")
     for container in "${containers[@]}"; do
@@ -768,10 +794,11 @@ check_all_status() {
     done
 }
 
+# 主菜單
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v${SCRIPT_VERSION:-6.5.5})"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v${SCRIPT_VERSION:-6.5.6})"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -798,7 +825,7 @@ start_menu() {
 }
 
 # --- 第3節:腳本入口 (主邏輯) ---
-SCRIPT_VERSION="6.5.5"
+SCRIPT_VERSION="6.5.6"
 clear
 cat <<-'EOM'
   ____      _        __          __      _   _             _             _
