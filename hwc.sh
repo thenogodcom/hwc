@@ -726,6 +726,7 @@ uninstall_all_services() {
 }
 
 # 淨化共享網絡
+# [MODIFIED] cleanup_and_recreate_network 函數 - 增加 Sing-box 配置動態更新
 cleanup_and_recreate_network() {
     log WARN "此操作將停止所有 HWC 相關容器，刪除並重建共享網路 (${SHARED_NETWORK_NAME})，然後重新啟動容器。"
     read -p "您確定要執行 '一鍵淨化共享網絡' 嗎? (y/N): " choice < /dev/tty
@@ -734,7 +735,7 @@ cleanup_and_recreate_network() {
     local containers_to_process=("$ADGUARD_CONTAINER_NAME" "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME")
     local found_containers=()
 
-    log INFO "1/4 正在停止所有 HWC 相關容器..."
+    log INFO "1/5 正在停止所有 HWC 相關容器..."
     for container in "${containers_to_process[@]}"; do
         if container_exists "$container"; then
             log INFO " - 停止容器: $container"
@@ -744,41 +745,61 @@ cleanup_and_recreate_network() {
     done
 
     if [ ${#found_containers[@]} -eq 0 ]; then
-        log WARN "未找到任何已安裝的 HWC 相關容器。";
+        log WARN "未找到任何已安裝的 HWC 相關容器。"; return
     fi
     
-    log INFO "2/4 等待 3 秒確保連接完全釋放..."
+    log INFO "2/5 等待 3 秒確保連接完全釋放..."
     sleep 3
 
-    log INFO "3/4 刪除並重建共享網路 (${SHARED_NETWORK_NAME})..."
-    if docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null; then
-        log INFO " - 舊網路已刪除。"
-    else
-        log WARN " - 共享網路 ${SHARED_NETWORK_NAME} 不存在或無法刪除 (可能已被移除)。"
-    fi
+    log INFO "3/5 刪除並重建共享網路 (${SHARED_NETWORK_NAME})..."
+    docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null || true
     if docker network create "${SHARED_NETWORK_NAME}" &>/dev/null; then
         log INFO " - 新網路 ${SHARED_NETWORK_NAME} 已重建成功。"
     else
         log ERROR " - 網路重建失敗，操作中止！"; return 1
     fi
-
-    log INFO "4/4 重新啟動並連接容器到新網路..."
-    local restart_success=true
-    for container in "${found_containers[@]}"; do
-        log INFO " - 啟動並連接 $container..."
-        docker network connect "${SHARED_NETWORK_NAME}" "$container" &>/dev/null || true
-        if docker start "$container" &>/dev/null; then
-             wait_for_container_ready "$container" "$container" 10 &>/dev/null
-             log INFO " - $container 已重啟並連接。"
-        else
-            log ERROR " - $container 啟動失敗。請檢查其配置。"
-            restart_success=false
+    
+    # 按照依賴順序重新連接和啟動
+    local restart_order=("$ADGUARD_CONTAINER_NAME" "$CADDY_CONTAINER_NAME")
+    log INFO "4/5 正在按順序啟動基礎服務 (AdGuard, Caddy)..."
+    for container in "${restart_order[@]}"; do
+        if [[ " ${found_containers[*]} " =~ " ${container} " ]]; then
+            log INFO " - 連接並啟動 ${container}..."
+            docker network connect "${SHARED_NETWORK_NAME}" "${container}" &>/dev/null
+            if docker start "${container}" &>/dev/null; then
+                wait_for_container_ready "$container" "$container" 15
+            else
+                log ERROR " - ${container} 啟動失敗。"
+            fi
         fi
     done
-    
-    if $restart_success; then
-        log INFO "✅ 共享網絡淨化與所有服務重啟完成。"
+
+    # 關鍵步驟：更新 Sing-box 配置
+    if [[ " ${found_containers[*]} " =~ " ${SINGBOX_CONTAINER_NAME} " ]]; then
+        log INFO "5/5 正在動態更新 Sing-box 配置並啟動核心服務..."
+        if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME")" = "true" ]; then
+            local NEW_AG_IP
+            NEW_AG_IP=$(docker inspect -f "{{.NetworkSettings.Networks.${SHARED_NETWORK_NAME}.IPAddress}}" "$ADGUARD_CONTAINER_NAME" 2>/dev/null)
+            if [ -n "$NEW_AG_IP" ]; then
+                log INFO " - 檢測到 AdGuard Home 新 IP: ${NEW_AG_IP}。正在更新 Sing-box 配置文件..."
+                # 使用 sed 進行簡單高效的替換
+                sed -i -E "s/(\"server\":\s*\")[0-9\.]+(\",)/\1${NEW_AG_IP}\2/" "${SINGBOX_CONFIG_FILE}"
+            else
+                log WARN " - 無法獲取 AdGuard Home 的新 IP，Sing-box 可能無法正確解析 DNS。"
+            fi
+        fi
+        
+        # 最後啟動 Sing-box
+        log INFO " - 連接並啟動 ${SINGBOX_CONTAINER_NAME}..."
+        docker network connect "${SHARED_NETWORK_NAME}" "${SINGBOX_CONTAINER_NAME}" &>/dev/null
+        if docker start "${SINGBOX_CONTAINER_NAME}" &>/dev/null; then
+             wait_for_container_ready "${SINGBOX_CONTAINER_NAME}" "${SINGBOX_CONTAINER_NAME}" 15
+        else
+            log ERROR " - ${SINGBOX_CONTAINER_NAME} 啟動失敗。"
+        fi
     fi
+    
+    log INFO "✅ 共享網絡淨化與所有服務重啟完成。"
 }
 
 # 檢查所有服務狀態
