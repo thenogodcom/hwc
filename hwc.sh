@@ -175,9 +175,9 @@ DNS
 {
   "log": { "level": "${log_level}", "timestamp": true },
   "dns": { "servers": [ ${dns_servers_block} { "type": "local", "tag": "local-dns" } ], "strategy": "prefer_ipv4" },
-  "endpoints": [ { "type": "wireguard", "tag": "warp-out", "system": false, "mtu": 1280, "address": [ "${ipv4_address}/32", "${ipv6_address}/128" ], "private_key": "${private_key}", "peers": [ { "address": "engage.cloudflareclient.com", "port": 2408, "public_key": "${public_key}", "allowed_ips": [ "0.0.0.0/0", "::/0" ], "persistent_keepalive_interval": 25 } ] } ],
+  "endpoints": [ { "type": "wireguard", "tag": "warp-out", "system": false, "mtu": 1280, "address": [ "${ipv4_address}/32", "${ipv6_address}/128" ], "private_key": "${private_key}", "listen_port": 0, "peers": [ { "address": "engage.cloudflareclient.com", "port": 2408, "public_key": "${public_key}", "allowed_ips": [ "0.0.0.0/0", "::/0" ], "persistent_keepalive_interval": 20, "reserved": [0, 0, 0] } ] } ],
   "inbounds": [ { "type": "hysteria2", "tag": "hysteria-in", "listen": "::", "listen_port": 443, "users": [ { "password": "${password}" } ], "tls": { "enabled": true, "server_name": "${domain}", "certificate_path": "${cert_path_in_container}", "key_path": "${key_path_in_container}" } }, { "type": "socks", "tag": "socks-in", "listen": "0.0.0.0", "listen_port": 8008 } ],
-  "outbounds": [ { "type": "direct", "tag": "direct", "tcp_fast_open": true, "tcp_multi_path": false, "udp_fragment": false, "connect_timeout": "5s" } ],
+  "outbounds": [ { "type": "direct", "tag": "direct" } ],
   "route": { "rules": [ { "protocol": "dns", "outbound": "direct" }, { "ip_is_private": true, "outbound": "direct" }, { "domain_suffix": [ "youtube.com", "youtu.be", "ytimg.com", "googlevideo.com", "github.com", "github.io", "githubassets.com", "githubusercontent.com" ], "outbound": "direct" } ], "final": "warp-out", "default_domain_resolver": "${dns_resolver_tag}", "auto_detect_interface": true }
 }
 EOF
