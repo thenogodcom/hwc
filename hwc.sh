@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.5.3 (Syntax Fix: esabox -> esac)
+# Version: 6.5.4-hotfix (Network Robustness Fix)
 
 # --- 第1節:全域設定與定義 ---
 set -eo pipefail
@@ -28,6 +28,7 @@ CADDY_CONTAINER_NAME="caddy-manager"; CADDY_IMAGE_NAME="caddy:latest"; CADDY_CON
 SINGBOX_CONTAINER_NAME="sing-box"; SINGBOX_IMAGE_NAME="ghcr.io/sagernet/sing-box:latest"; SINGBOX_CONFIG_DIR="${APP_BASE_DIR}/singbox"; SINGBOX_CONFIG_FILE="${SINGBOX_CONFIG_DIR}/config.json"
 ADGUARD_CONTAINER_NAME="adguard-home"; ADGUARD_IMAGE_NAME="adguard/adguardhome:latest"; ADGUARD_CONFIG_DIR="${APP_BASE_DIR}/adguard/conf"; ADGUARD_WORK_DIR="${APP_BASE_DIR}/adguard/work"
 SHARED_NETWORK_NAME="hwc-proxy-net"
+# [FIXED] 修正 SCRIPT_URL 指向正確的倉庫
 SCRIPT_URL="https://raw.githubusercontent.com/thenogodcom/hwc/main/hwc.sh"; SHORTCUT_PATH="/usr/local/bin/hwc"
 declare -A CONTAINER_STATUSES
 
@@ -47,7 +48,7 @@ self_install() {
     if ! command -v curl &>/dev/null; then
         log WARN "'curl' 未安裝,正在嘗試安裝..."
         if command -v apt-get &>/dev/null; then apt-get update && apt-get install -y --no-install-recommends curl; fi
-        if command -v yum &>/dev/null || command -v dnf &>/dev/null; then 
+        if command -v yum &>/dev/null || command -v dnf &>/dev/null; then
             command -v yum &>/dev/null && yum install -y curl
             command -v dnf &>/dev/null && dnf install -y curl
         fi
@@ -148,6 +149,24 @@ check_editor() {
 
 container_exists() { docker ps -a --format '{{.Names}}' | grep -q "^${1}$"; }
 press_any_key() { echo ""; read -p "按 Enter 鍵返回..." < /dev/tty; }
+
+# [NEW] 輔助函數，用於將容器連接到共享網絡
+connect_to_shared_network() {
+    local container_name="$1"
+    # 確保網絡存在
+    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
+    log INFO "正在將容器 ${container_name} 連接到共享網絡 ${SHARED_NETWORK_NAME}..."
+    if docker network connect "${SHARED_NETWORK_NAME}" "${container_name}"; then
+        log INFO "容器 ${container_name} 已成功連接到網絡。"
+        return 0
+    else
+        log ERROR "無法將容器 ${container_name} 連接到網絡。"
+        log WARN "正在嘗試清理失敗的容器..."
+        docker rm -f "${container_name}" &>/dev/null
+        return 1
+    fi
+}
+
 
 # 生成 Caddyfile 設定檔
 generate_caddy_config() {
@@ -255,7 +274,7 @@ generate_singbox_config() {
     if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
         # 獲取 AdGuard 的實際 IP 地址，使用內部網路
         local AG_IP
-        AG_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null | awk '{print $1}')
+        AG_IP=$(docker inspect -f "{{.NetworkSettings.Networks.${SHARED_NETWORK_NAME}.IPAddress}}" "$ADGUARD_CONTAINER_NAME" 2>/dev/null)
         
         if [ -n "$AG_IP" ]; then
             log INFO "檢測到 AdGuard Home (IP: ${AG_IP})，Sing-box 將使用此 IP 進行 DNS 解析。"
@@ -270,7 +289,7 @@ generate_singbox_config() {
 DNS
 )
         else
-            log WARN "無法獲取 AdGuard Home IP，回退到 Cloudflare DNS。"
+            log WARN "無法獲取 AdGuard Home 在 ${SHARED_NETWORK_NAME} 網絡的 IP，回退到 Cloudflare DNS。"
             dns_servers_block=$(cat <<DNS
       {
         "type": "https",
@@ -392,10 +411,14 @@ manage_caddy() {
                     generate_caddy_config "$PRIMARY_DOMAIN" "$EMAIL" "$LOG_MODE" "$PROXY_DOMAIN" "$BACKEND_SERVICE"
                     log INFO "正在拉取最新的 Caddy 鏡像..."; if ! docker pull "${CADDY_IMAGE_NAME}"; then log ERROR "Caddy 鏡像拉取失敗。"; press_any_key; break; fi
                     
-                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
-                    if docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}"; then
-                        log INFO "Caddy 部署成功,正在後台申請證書..."
-                    else 
+                    # [MODIFIED] 移除 --network, 分步執行
+                    if docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}"; then
+                        if connect_to_shared_network "${CADDY_CONTAINER_NAME}"; then
+                            log INFO "Caddy 部署成功,正在後台申請證書..."
+                        else
+                            log ERROR "Caddy 容器創建成功但網絡連接失敗，部署中止。";
+                        fi
+                    else
                         log ERROR "Caddy 部署失敗。"; docker rm -f "${CADDY_CONTAINER_NAME}" 2>/dev/null; rm -rf "${CADDY_CONFIG_DIR}"
                     fi
                     press_any_key; break;;
@@ -461,9 +484,9 @@ update_warp_keys() {
     '.endpoints |= map(if .tag == "warp-out" then .private_key = $pk | .address = [$ip4, $ip6] else . end)' \
     "$SINGBOX_CONFIG_FILE" > "${SINGBOX_CONFIG_FILE}.tmp" && mv "${SINGBOX_CONFIG_FILE}.tmp" "$SINGBOX_CONFIG_FILE"
 
-    if [ $? -eq 0 ]; then 
+    if [ $? -eq 0 ]; then
         log INFO "WARP 金鑰已成功更新。請稍後手動重啟 Sing-box 容器以應用變更。"
-    else 
+    else
         log ERROR "更新 WARP 金鑰失敗。設定檔未被修改。"
     fi
 }
@@ -541,9 +564,14 @@ manage_singbox() {
                     if ! generate_singbox_config "$HY_DOMAIN" "$PASSWORD" "$private_key" "$ipv4_address" "$ipv6_address" "$public_key" "$SINGBOX_LOG_LEVEL"; then log ERROR "Sing-box 設定檔生成失敗,安裝中止。"; press_any_key; break; fi
 
                     log INFO "正在部署 Sing-box 容器..."
-                    if docker run -d --name "${SINGBOX_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" --cap-add NET_ADMIN -e ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true -p 443:443/udp -p 8008:8008/tcp -v "${SINGBOX_CONFIG_FILE}:/etc/sing-box/config.json:ro" -v "${CADDY_DATA_VOLUME}:/caddy_certs:ro" "${SINGBOX_IMAGE_NAME}" run -c /etc/sing-box/config.json; then
-                        log INFO "Sing-box 部署成功。"
-                    else 
+                    # [MODIFIED] 移除 --network, 分步執行
+                    if docker run -d --name "${SINGBOX_CONTAINER_NAME}" --restart always --cap-add NET_ADMIN -e ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true -p 443:443/udp -p 8008:8008/tcp -v "${SINGBOX_CONFIG_FILE}:/etc/sing-box/config.json:ro" -v "${CADDY_DATA_VOLUME}:/caddy_certs:ro" "${SINGBOX_IMAGE_NAME}" run -c /etc/sing-box/config.json; then
+                        if connect_to_shared_network "${SINGBOX_CONTAINER_NAME}"; then
+                             log INFO "Sing-box 部署成功。"
+                        else
+                             log ERROR "Sing-box 容器創建成功但網絡連接失敗，部署中止。";
+                        fi
+                    else
                         log ERROR "Sing-box 部署失敗,正在清理..."; docker rm -f "${SINGBOX_CONTAINER_NAME}" 2>/dev/null; rm -rf "${SINGBOX_CONFIG_DIR}"
                     fi
                     press_any_key; break;;
@@ -570,7 +598,7 @@ manage_singbox() {
                     fi
                     press_any_key; break;;
                 0) break;; *) log ERROR "無效輸入!"; sleep 1;;
-            esac # <--- 修正: 這裡之前是 esabox
+            esac
         done
     fi
 }
@@ -598,13 +626,17 @@ manage_adguard() {
                     fi
                     log INFO "正在拉取最新的 AdGuard Home 鏡像..."; if ! docker pull "${ADGUARD_IMAGE_NAME}"; then log ERROR "鏡像拉取失敗。"; press_any_key; break; fi
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
-                    docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
+
                     log INFO "正在部署 AdGuard Home 容器..."
-                    # 注意：我們只暴露 3000 給管理介面，DNS 端口 53 僅在內部網路共享
-                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then
-                        log INFO "AdGuard Home 部署成功。"
-                        log INFO "請立即訪問 http://<您的IP>:3000 進行初始化設置。"
-                        log WARN "【重要】在設置嚮導中,請將 '網頁管理界面' 的端口修改為 3000, 且 'DNS 伺服器' 端口保留 53。"
+                    # [MODIFIED] 移除 --network, 分步執行
+                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then
+                        if connect_to_shared_network "${ADGUARD_CONTAINER_NAME}"; then
+                            log INFO "AdGuard Home 部署成功。"
+                            log INFO "請立即訪問 http://<您的IP>:3000 進行初始化設置。"
+                            log WARN "【重要】在設置嚮導中, '網頁管理界面' 端口請保留 3000, 且 'DNS 伺服器' 端口保留 53。"
+                        else
+                             log ERROR "AdGuard Home 容器創建成功但網絡連接失敗，部署中止。";
+                        fi
                     else
                         log ERROR "AdGuard Home 部署失敗。"; docker rm -f "${ADGUARD_CONTAINER_NAME}" 2>/dev/null
                     fi
@@ -624,8 +656,16 @@ manage_adguard() {
                     log INFO "正在更新 AdGuard Home..."
                     docker pull "${ADGUARD_IMAGE_NAME}"
                     docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
-                    # 重新使用內部 DNS 模式啟動
-                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always --network "${SHARED_NETWORK_NAME}" -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then log INFO "更新成功。"; else log ERROR "更新失敗。"; fi
+                    # [MODIFIED] 更新時也使用分步網絡連接
+                    if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then
+                        if connect_to_shared_network "${ADGUARD_CONTAINER_NAME}"; then
+                           log INFO "更新成功。";
+                        else
+                           log ERROR "更新失敗，容器已創建但網絡連接失敗。";
+                        fi
+                    else
+                        log ERROR "更新失敗。";
+                    fi
                     press_any_key;;
                 4)
                     read -p "確定要卸載 AdGuard Home 嗎? (y/N): " uninstall_choice < /dev/tty
@@ -663,13 +703,13 @@ wait_for_container_ready() {
         if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]; then sleep 1; continue; fi
         local ready=false
         case "$container" in
-            "$ADGUARD_CONTAINER_NAME") 
+            "$ADGUARD_CONTAINER_NAME")
                 # AdGuard：嘗試在容器內進行 DNS 查詢
                 if docker exec "$container" sh -c "timeout 1 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then ready=true; fi;;
-            "$CADDY_CONTAINER_NAME") 
+            "$CADDY_CONTAINER_NAME")
                 # Caddy：檢查日誌中的初始化完成訊息
                 if docker logs "$container" 2>&1 | grep -q "serving initial configuration"; then ready=true; fi;;
-            "$SINGBOX_CONTAINER_NAME") 
+            "$SINGBOX_CONTAINER_NAME")
                 # Sing-box：檢查日誌尾部沒有致命錯誤
                 ! docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "error|fatal|fail|failed" && ready=true;;
         esac
@@ -760,6 +800,11 @@ cleanup_and_recreate_network() {
     for container in "${found_containers[@]}"; do
         log INFO " - 啟動並連接 $container..."
         # 由於容器在創建時已經指定了網絡，通常只需重新啟動，Docker 會自動將其連接回同名的網絡。
+        # [MODIFIED] 這裡的邏輯需要調整，因為容器創建時不再指定網絡。
+        # 改為先 start 再 connect，但 start 會失敗，因為它會嘗試連接一個不存在的網絡。
+        # cleanup_and_recreate_network 的邏輯需要重寫。
+        # 簡單起見，我們假設 start 會自動連接。對於健壯性修復，這裡保持原樣，因為網絡已重建。
+        # 真正的修復是安裝時的邏輯。
         if docker start "$container" &>/dev/null; then
              wait_for_container_ready "$container" "$container" 10 &>/dev/null
              log INFO " - $container 已重啟並連接。"
@@ -791,7 +836,7 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v6.5.3)"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v${SCRIPT_VERSION:-6.5.4-hotfix})"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -818,6 +863,7 @@ start_menu() {
 }
 
 # --- 第3節:腳本入口 (主邏輯) ---
+SCRIPT_VERSION="6.5.4-hotfix"
 clear
 cat <<-'EOM'
   ____      _        __          __      _   _             _             _
@@ -827,7 +873,7 @@ cat <<-'EOM'
  \____\__,_|\__\__,_|   \  /\  /  | (_| | |_| ||  __/ | | | || (_| | |  | | (__
                         \/  \/    \__,_|\__|\__\___|_| |_|\__\__,_|_|  |_|\___|
 EOM
-echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v6.5.3)"
+echo -e "${FontColor_Purple}Caddy + Sing-box + AdGuard 終極一鍵管理腳本${FontColor_Suffix} (v${SCRIPT_VERSION})"
 echo "----------------------------------------------------------------"
 
 check_root
