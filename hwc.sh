@@ -726,13 +726,12 @@ uninstall_all_services() {
 }
 
 # 淨化共享網絡
-# [MODIFIED] cleanup_and_recreate_network 函數 - 使用 jq 進行健壯的 JSON 更新
+# [FINAL-FIX] cleanup_and_recreate_network 函數 - 增加網絡解綁與更新邏輯
 cleanup_and_recreate_network() {
     log WARN "此操作將停止所有 HWC 相關容器，刪除並重建共享網路 (${SHARED_NETWORK_NAME})，然後重新啟動容器。"
     read -p "您確定要執行 '一鍵淨化共享網絡' 嗎? (y/N): " choice < /dev/tty
     if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi
 
-    # 確保 jq 已安裝
     if ! command -v jq &>/dev/null; then
         log INFO "正在安裝 JSON 處理工具 jq..."
         if command -v apt-get &>/dev/null; then apt-get update && apt-get install -y jq;
@@ -761,6 +760,10 @@ cleanup_and_recreate_network() {
     sleep 3
 
     log INFO "3/5 刪除並重建共享網路 (${SHARED_NETWORK_NAME})..."
+    # 强制斷開所有找到的容器與舊網絡的連接，忽略錯誤
+    for container in "${found_containers[@]}"; do
+        docker network disconnect -f "${SHARED_NETWORK_NAME}" "${container}" &>/dev/null || true
+    done
     docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null || true
     if docker network create "${SHARED_NETWORK_NAME}" &>/dev/null; then
         log INFO " - 新網路 ${SHARED_NETWORK_NAME} 已重建成功。"
@@ -789,24 +792,18 @@ cleanup_and_recreate_network() {
             NEW_AG_IP=$(docker inspect -f "{{.NetworkSettings.Networks.${SHARED_NETWORK_NAME}.IPAddress}}" "$ADGUARD_CONTAINER_NAME" 2>/dev/null)
             if [ -n "$NEW_AG_IP" ]; then
                 log INFO " - 檢測到 AdGuard Home 新 IP: ${NEW_AG_IP}。正在使用 jq 更新 Sing-box 配置文件..."
-                
-                # 使用 jq 安全地更新 JSON 文件
                 jq --arg new_ip "$NEW_AG_IP" \
                    '(.dns.servers[] | select(.tag == "adguard")).server = $new_ip' \
                    "${SINGBOX_CONFIG_FILE}" > "${SINGBOX_CONFIG_FILE}.tmp" && \
                    mv "${SINGBOX_CONFIG_FILE}.tmp" "${SINGBOX_CONFIG_FILE}"
-
-                if [ $? -eq 0 ]; then
-                    log INFO " - 配置文件更新成功。"
-                else
-                    log ERROR " - 配置文件更新失敗！"
-                fi
+                if [ $? -eq 0 ]; then log INFO " - 配置文件更新成功。"; else log ERROR " - 配置文件更新失敗！"; fi
             else
                 log WARN " - 無法獲取 AdGuard Home 的新 IP，Sing-box 可能無法正確解析 DNS。"
             fi
         fi
         
         log INFO " - 連接並啟動 ${SINGBOX_CONTAINER_NAME}..."
+        # 關鍵：在啟動前，將 sing-box 連接到新的網絡
         docker network connect "${SHARED_NETWORK_NAME}" "${SINGBOX_CONTAINER_NAME}" &>/dev/null
         if docker start "${SINGBOX_CONTAINER_NAME}" &>/dev/null; then
              wait_for_container_ready "${SINGBOX_CONTAINER_NAME}" "${SINGBOX_CONTAINER_NAME}" 15
