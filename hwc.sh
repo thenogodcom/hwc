@@ -195,13 +195,64 @@ clear_logs_and_restart_all() { clear_all_logs; log INFO "3秒後將自動重啟�
 uninstall_all_services() { log WARN "此操作將不可逆地刪除 Caddy, Sing-box, AdGuard Home 的所有相關數據！"; read -p "您確定要徹底清理所有服務嗎? (y/N): " choice < /dev/tty; if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi; log INFO "正在停止並刪除所有服務容器..."; local containers_to_remove=("$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME"); local container_ids=""; for name in "${containers_to_remove[@]}"; do id=$(docker ps -a -q --filter "name=^/${name}$"); if [ -n "$id" ]; then container_ids+="$id "; fi; done; if [ -n "$container_ids" ]; then docker stop $container_ids &>/dev/null; docker rm $container_ids &>/dev/null; log INFO "所有現存的 HWC 容器已停止並刪除。"; else log INFO "未找到需要清理的 HWC 容器。"; fi; log INFO "正在刪除本地設定檔和數據..."; rm -rf "${APP_BASE_DIR}"; log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null || true; log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null || true; log INFO "正在清除所有鏡像緩存..."; docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null || true; log INFO "所有服務已徹底清理完畢。"; }
 
 # [MODIFIED] 终极修复版
+# [FINAL-FIX-V5] 
+# 1. wait_for_container_ready: 增加了对 sing-box 启动日志的特定关键字检查
+# 2. cleanup_and_recreate_network: 增加了对 wait_for 失败的容错处理
+wait_for_container_ready() {
+    local container="$1" service_name="$2" max_wait="${3:-30}"
+    log INFO "等待 ${service_name} 就绪..."
+    for (( i=1; i<=max_wait; i++ )); do
+        if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]; then
+            # 如果容器直接就没在运行，那就没必要等了
+            if (( i > 5 )); then # 给予5秒启动时间
+                log WARN "✗ ${service_name} 容器未能保持运行状态。"
+                return 1
+            fi
+            sleep 1; continue
+        fi
+        
+        local ready=false
+        case "$container" in
+            "$ADGUARD_CONTAINER_NAME")
+                if docker exec "$container" sh -c "timeout 2 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then ready=true; fi;;
+            "$CADDY_CONTAINER_NAME")
+                if docker logs "$container" 2>&1 | grep -q "serving initial configuration"; then ready=true; fi;;
+            "$SINGBOX_CONTAINER_NAME")
+                # 更智能的检查：
+                # 1. 如果看到 inbound/hysteria2 started，说明核心服务好了
+                # 2. 如果没看到成功信息，再检查是否有致命错误
+                if docker logs "$container" 2>&1 | tail -n 20 | grep -q "inbound/hysteria-in started"; then
+                    ready=true
+                elif ! docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "fatal|fail to create endpoint"; then
+                    # 如果没有致命错误，我们就多给它一点时间，而不是立即判定失败
+                    ready=false 
+                else
+                    # 发现了致命错误，直接判定失败
+                    log WARN "✗ ${service_name} 日志中检测到致命错误。"
+                    return 1
+                fi
+                ;;
+        esac
+
+        if $ready; then
+            echo ""; log INFO "✓ ${service_name} 已就绪"
+            return 0
+        fi
+        echo -ne "."
+        sleep 1
+    done
+    echo ""
+    log WARN "✗ ${service_name} 在 ${max_wait} 秒內未能达到就绪状态。"
+    return 1
+}
+
 cleanup_and_recreate_network() {
     log WARN "此操作將停止所有 HWC 相關容器，刪除並重建共享網路 (${SHARED_NETWORK_NAME})，然後重新啟動容器。"
     read -p "您確定要執行 '一鍵淨化共享網絡' 嗎? (y/N): " choice < /dev/tty
     if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi
 
     if ! command -v jq &>/dev/null; then
-        log INFO "正在安裝 JSON 處理工具 jq..."
+        log INFO "正在安裝 JSON 處理工具 jq...";
         if command -v apt-get &>/dev/null; then apt-get update && apt-get install -y jq;
         elif command -v yum &>/dev/null; then yum install -y jq;
         elif command -v dnf &>/dev/null; then dnf install -y jq;
@@ -214,55 +265,37 @@ cleanup_and_recreate_network() {
     log INFO "1/5 正在停止所有 HWC 相關容器..."
     for container in "${containers_to_process[@]}"; do
         if container_exists "$container"; then
-            log INFO " - 停止容器: $container"
-            docker stop "$container" &>/dev/null || log WARN "無法停止 $container"
-            found_containers+=("$container")
+            log INFO " - 停止容器: $container"; docker stop "$container" &>/dev/null || log WARN "無法停止 $container"; found_containers+=("$container")
         fi
     done
 
-    if [ ${#found_containers[@]} -eq 0 ]; then
-        log WARN "未找到任何已安裝的 HWC 相關容器。"; return
-    fi
-    
-    log INFO "2/5 等待 3 秒確保連接完全釋放..."
-    sleep 3
-
+    if [ ${#found_containers[@]} -eq 0 ]; then log WARN "未找到任何已安裝的 HWC 相關容器。"; return; fi
+    log INFO "2/5 等待 3 秒確保連接完全釋放..."; sleep 3
     log INFO "3/5 刪除並重建共享網路 (${SHARED_NETWORK_NAME})..."
     for container in "${found_containers[@]}"; do
         docker network disconnect -f "${SHARED_NETWORK_NAME}" "${container}" &>/dev/null || true
     done
     docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null || true
-    if docker network create "${SHARED_NETWORK_NAME}" &>/dev/null; then
-        log INFO " - 新網路 ${SHARED_NETWORK_NAME} 已重建成功。"
-    else
-        log ERROR " - 網路重建失敗，操作中止！"; return 1
-    fi
+    if docker network create "${SHARED_NETWORK_NAME}" &>/dev/null; then log INFO " - 新網路 ${SHARED_NETWORK_NAME} 已重建成功。"; else log ERROR " - 網路重建失敗，操作中止！"; return 1; fi
     
     local restart_order=("$ADGUARD_CONTAINER_NAME" "$CADDY_CONTAINER_NAME")
     log INFO "4/5 正在按順序啟動基礎服務 (AdGuard, Caddy)..."
     for container in "${restart_order[@]}"; do
         if [[ " ${found_containers[*]} " =~ " ${container} " ]]; then
-            log INFO " - 連接並啟動 ${container}..."
-            docker network connect "${SHARED_NETWORK_NAME}" "${container}" &>/dev/null
+            log INFO " - 連接並啟動 ${container}..."; docker network connect "${SHARED_NETWORK_NAME}" "${container}" &>/dev/null
             if docker start "${container}" &>/dev/null; then
-                wait_for_container_ready "$container" "$container" 15
-            else
-                log ERROR " - ${container} 啟動失敗。"
-            fi
+                wait_for_container_ready "$container" "$container" 20 || log WARN "基础服务 ${container} 未能就绪，但将继续..."
+            else log ERROR " - ${container} 啟動失敗。"; fi
         fi
     done
 
     if [[ " ${found_containers[*]} " =~ " ${SINGBOX_CONTAINER_NAME} " ]]; then
         log INFO "5/5 正在動態更新 Sing-box 配置並啟動核心服務..."
         if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME")" = "true" ]; then
-            local NEW_AG_IP
-            NEW_AG_IP=$(docker inspect -f "{{ index .NetworkSettings.Networks \"${SHARED_NETWORK_NAME}\" \"IPAddress\" }}" "$ADGUARD_CONTAINER_NAME" 2>/dev/null)
-            
+            local NEW_AG_IP; NEW_AG_IP=$(docker inspect -f "{{ index .NetworkSettings.Networks \"${SHARED_NETWORK_NAME}\" \"IPAddress\" }}" "$ADGUARD_CONTAINER_NAME" 2>/dev/null)
             if [ -n "$NEW_AG_IP" ]; then
-                log INFO " - 檢測到 AdGuard Home 新 IP: ${NEW_AG_IP}。正在使用 jq 更新 Sing-box 配置文件..."
-                if ! jq empty "${SINGBOX_CONFIG_FILE}" >/dev/null 2>&1; then
-                    log ERROR " - Sing-box 配置文件不是有效的 JSON 文件！操作中止。"
-                else
+                log INFO " - 檢測到 AdGuard Home 新 IP: ${NEW_AG_IP}。正在更新 Sing-box 配置文件..."
+                if ! jq empty "${SINGBOX_CONFIG_FILE}" >/dev/null 2>&1; then log ERROR " - Sing-box 配置文件不是有效的 JSON 文件！操作中止。"; else
                     if jq -e 'any(.dns.servers[]; .tag == "adguard")' "${SINGBOX_CONFIG_FILE}" >/dev/null; then
                         jq --arg new_ip "$NEW_AG_IP" '(.dns.servers[] | select(.tag == "adguard")).server = $new_ip' "${SINGBOX_CONFIG_FILE}" > "${SINGBOX_CONFIG_FILE}.tmp" && mv "${SINGBOX_CONFIG_FILE}.tmp" "${SINGBOX_CONFIG_FILE}"
                     else
@@ -274,15 +307,17 @@ cleanup_and_recreate_network() {
             fi
         fi
         
-        log INFO " - 等待 5 秒，確保依賴服務稳定..."
-        sleep 5
-
+        log INFO " - 等待 5 秒，確保依賴服務稳定..."; sleep 5
         log INFO " - 連接並啟動 ${SINGBOX_CONTAINER_NAME}..."
         docker network connect "${SHARED_NETWORK_NAME}" "${SINGBOX_CONTAINER_NAME}" &>/dev/null
         if docker start "${SINGBOX_CONTAINER_NAME}" &>/dev/null; then
-             wait_for_container_ready "${SINGBOX_CONTAINER_NAME}" "${SINGBOX_CONTAINER_NAME}" 20
+             # 关键修改: 即使 wait_for 失败，也不让脚本退出，而是给用户提示
+             if ! wait_for_container_ready "${SINGBOX_CONTAINER_NAME}" "Sing-box" 30; then
+                log WARN "Sing-box 自動重啟後未能立即就緒。可能是 WARP 連接不穩定。"
+                log WARN "請稍後手動重啟一次: hwc -> 2. 管理 Sing-box -> 3. 重啟"
+             fi
         else
-            log ERROR " - ${SINGBOX_CONTAINER_NAME} 啟動失敗。请手动重启或检查日志: docker logs sing-box"
+            log ERROR " - ${SINGBOX_CONTAINER_NAME} 啟動失敗。请检查日志: docker logs sing-box"
         fi
     fi
     
