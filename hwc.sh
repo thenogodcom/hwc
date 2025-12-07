@@ -2,7 +2,7 @@
 #
 # Description: Ultimate All-in-One Manager for Caddy, Sing-box & AdGuard Home with self-installing shortcut.
 # Author: Your Name (Inspired by P-TERX, Refactored for Sing-box)
-# Version: 6.5.4-hotfix (Network Robustness Fix)
+# Version: 6.5.5 (Caddy Domain Logic & Uninstall Robustness Fix)
 
 # --- 第1節:全域設定與定義 ---
 set -eo pipefail
@@ -28,7 +28,6 @@ CADDY_CONTAINER_NAME="caddy-manager"; CADDY_IMAGE_NAME="caddy:latest"; CADDY_CON
 SINGBOX_CONTAINER_NAME="sing-box"; SINGBOX_IMAGE_NAME="ghcr.io/sagernet/sing-box:latest"; SINGBOX_CONFIG_DIR="${APP_BASE_DIR}/singbox"; SINGBOX_CONFIG_FILE="${SINGBOX_CONFIG_DIR}/config.json"
 ADGUARD_CONTAINER_NAME="adguard-home"; ADGUARD_IMAGE_NAME="adguard/adguardhome:latest"; ADGUARD_CONFIG_DIR="${APP_BASE_DIR}/adguard/conf"; ADGUARD_WORK_DIR="${APP_BASE_DIR}/adguard/work"
 SHARED_NETWORK_NAME="hwc-proxy-net"
-# [FIXED] 修正 SCRIPT_URL 指向正確的倉庫
 SCRIPT_URL="https://raw.githubusercontent.com/thenogodcom/hwc/main/hwc.sh"; SHORTCUT_PATH="/usr/local/bin/hwc"
 declare -A CONTAINER_STATUSES
 
@@ -36,10 +35,8 @@ declare -A CONTAINER_STATUSES
 
 # 自我安裝快捷命令
 self_install() {
-    # 傳遞所有參數給新執行的腳本
     local args_string
     printf -v args_string '%q ' "$@"
-
     local running_script_path
     if [[ -f "$0" ]]; then running_script_path=$(readlink -f "$0"); fi
     if [ "$running_script_path" = "$SHORTCUT_PATH" ]; then return 0; fi
@@ -150,10 +147,8 @@ check_editor() {
 container_exists() { docker ps -a --format '{{.Names}}' | grep -q "^${1}$"; }
 press_any_key() { echo ""; read -p "按 Enter 鍵返回..." < /dev/tty; }
 
-# [NEW] 輔助函數，用於將容器連接到共享網絡
 connect_to_shared_network() {
     local container_name="$1"
-    # 確保網絡存在
     docker network create "${SHARED_NETWORK_NAME}" &>/dev/null
     log INFO "正在將容器 ${container_name} 連接到共享網絡 ${SHARED_NETWORK_NAME}..."
     if docker network connect "${SHARED_NETWORK_NAME}" "${container_name}"; then
@@ -167,8 +162,7 @@ connect_to_shared_network() {
     fi
 }
 
-
-# 生成 Caddyfile 設定檔
+# [MODIFIED] 生成 Caddyfile 的邏輯更新
 generate_caddy_config() {
     local primary_domain="$1" email="$2" log_mode="$3" proxy_domain="$4" backend_service="$5"
     mkdir -p "${CADDY_CONFIG_DIR}"
@@ -203,33 +197,39 @@ ${global_log_block}
         header_up X-Forwarded-Proto {scheme}
     }
 }
+EOF
+    # 只有當主域名非空時才為其生成服務塊
+    if [ -n "$primary_domain" ]; then
+        cat >> "${CADDY_CONFIG_FILE}" <<EOF
 ${primary_domain} {
     import security_headers
     import proxy_to_backend {host}
 }
 EOF
-    if [ -n "$proxy_domain" ]; then
-        cat >> "${CADDY_CONFIG_FILE}" <<EOF
+    fi
+
+    # 代理域名是必選的，所以它總會有一個服務塊
+    # 如果主域名為空，則代理到後端；否則代理到主域名
+    local proxy_target="${primary_domain:-${backend_service}}"
+    cat >> "${CADDY_CONFIG_FILE}" <<EOF
 ${proxy_domain} {
     import security_headers
-    import proxy_to_backend ${primary_domain}
+    import proxy_to_backend ${proxy_target}
 }
 EOF
-    fi
-    log INFO "已為域名 ${primary_domain}$([ -n "$proxy_domain" ] && echo " 和 ${proxy_domain}") 建立 Caddyfile。"
+    log INFO "已為域名 ${proxy_domain}$([ -n "$primary_domain" ] && echo " 和 ${primary_domain}") 建立 Caddyfile。"
 }
+
 
 # 使用 wgcf 自動註冊並生成 WARP 設定檔 (最終穩定版)
 generate_warp_conf() {
     log INFO "正在使用 wgcf 註冊新的 WARP 帳戶 (動態下載最新版)..."
-    
     local arch
     case $(uname -m) in
         x86_64) arch="amd64";;
         aarch64) arch="arm64";;
         *) log ERROR "不支援的CPU架構: $(uname -m)"; return 1;;
     esac
-    
     local CMD_TEMPLATE='
     apk add --no-cache curl ca-certificates jq && \
     WGCF_URL=$(curl -s https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r ".assets[] | select(.name | contains(\\"linux_%s\\")) | .browser_download_url") && \
@@ -237,24 +237,18 @@ generate_warp_conf() {
     curl -fL -o wgcf "$WGCF_URL" && \
     chmod +x wgcf && \
     ./wgcf'
-
     local WGCF_CMD
     printf -v WGCF_CMD "$CMD_TEMPLATE" "$arch"
-
-    # 刪除可能存在的舊帳戶文件，確保可以重新註冊
     rm -f "${SINGBOX_CONFIG_DIR}/wgcf-account.toml"
-
     if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" -w /data alpine:latest sh -c "$WGCF_CMD register --accept-tos" > /dev/null 2>&1; then
         log ERROR "WARP 帳戶註冊失敗 (register)。請檢查網路或稍後重試。"
         log INFO "詳細錯誤信息, 請手動運行以下命令查看:"
         echo "docker run --rm -v \"${SINGBOX_CONFIG_DIR}:/data\" -w /data alpine:latest sh -c '$WGCF_CMD register --accept-tos'"
         return 1
     fi
-    
     if ! docker run --rm -v "${SINGBOX_CONFIG_DIR}:/data" -w /data alpine:latest sh -c "$WGCF_CMD generate" > /dev/null 2>&1; then
         log ERROR "WARP 設定檔生成失敗 (generate)。"; return 1
     fi
-    
     log INFO "WARP 帳戶和設定檔已成功生成。"
 }
 
@@ -262,98 +256,53 @@ generate_warp_conf() {
 generate_singbox_config() {
     local domain="$1" password="$2" private_key="$3" ipv4_address="$4" ipv6_address="$5" public_key="$6" log_level="${7:-error}"
     mkdir -p "${SINGBOX_CONFIG_DIR}"
-    
     local cert_path_info; cert_path_info=$(detect_cert_path "$domain")
     local cert_path="${cert_path_info%%|*}"; local key_path="${cert_path_info##*|}"
     local cert_path_in_container="${cert_path/\/data/\/caddy_certs}"
     local key_path_in_container="${key_path/\/data/\/caddy_certs}"
-    
     local dns_servers_block
-    local dns_resolver_tag="cloudflare" # 預設回退標籤
-
+    local dns_resolver_tag="cloudflare"
     if container_exists "$ADGUARD_CONTAINER_NAME" && [ "$(docker inspect -f '{{.State.Running}}' "$ADGUARD_CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
-        # 獲取 AdGuard 的實際 IP 地址，使用內部網路
         local AG_IP
         AG_IP=$(docker inspect -f "{{.NetworkSettings.Networks.${SHARED_NETWORK_NAME}.IPAddress}}" "$ADGUARD_CONTAINER_NAME" 2>/dev/null)
-        
         if [ -n "$AG_IP" ]; then
             log INFO "檢測到 AdGuard Home (IP: ${AG_IP})，Sing-box 將使用此 IP 進行 DNS 解析。"
             dns_resolver_tag="adguard"
             dns_servers_block=$(cat <<DNS
-      {
-        "type": "udp",
-        "server": "${AG_IP}",
-        "server_port": 53,
-        "tag": "adguard"
-      },
+      { "type": "udp", "server": "${AG_IP}", "server_port": 53, "tag": "adguard" },
 DNS
 )
         else
             log WARN "無法獲取 AdGuard Home 在 ${SHARED_NETWORK_NAME} 網絡的 IP，回退到 Cloudflare DNS。"
             dns_servers_block=$(cat <<DNS
-      {
-        "type": "https",
-        "server": "1.1.1.1",
-        "tag": "cloudflare",
-        "detour": "direct"
-      },
+      { "type": "https", "server": "1.1.1.1", "tag": "cloudflare", "detour": "direct" },
 DNS
 )
         fi
     else
         log WARN "未檢測到運行的 AdGuard Home，Sing-box 將回退到 Cloudflare DNS。"
         dns_servers_block=$(cat <<DNS
-      {
-        "type": "https",
-        "server": "1.1.1.1",
-        "tag": "cloudflare",
-        "detour": "direct"
-      },
+      { "type": "https", "server": "1.1.1.1", "tag": "cloudflare", "detour": "direct" },
 DNS
 )
     fi
-    
     cat > "${SINGBOX_CONFIG_FILE}" <<EOF
 {
-  "log": {
-    "level": "${log_level}",
-    "timestamp": true
-  },
+  "log": { "level": "${log_level}", "timestamp": true },
   "dns": {
-    "servers": [
-${dns_servers_block}
-      { "type": "local", "tag": "local-dns" }
-    ],
+    "servers": [ ${dns_servers_block} { "type": "local", "tag": "local-dns" } ],
     "strategy": "prefer_ipv4"
   },
   "endpoints": [
     {
-      "type": "wireguard",
-      "tag": "warp-out",
-      "system": false,
-      "name": "wg0",
-      "mtu": 1408,
-      "address": [
-        "${ipv4_address}/32",
-        "${ipv6_address}/128"
-      ],
-      "private_key": "${private_key}",
-      "listen_port": 10000,
+      "type": "wireguard", "tag": "warp-out", "system": false, "name": "wg0", "mtu": 1408,
+      "address": [ "${ipv4_address}/32", "${ipv6_address}/128" ],
+      "private_key": "${private_key}", "listen_port": 10000,
       "peers": [
         {
-          "address": "162.159.192.1",
-          "port": 2408,
-          "public_key": "${public_key}",
-          "allowed_ips": [
-            "0.0.0.0/0",
-            "::/0"
-          ],
-          "persistent_keepalive_interval": 30,
-          "reserved": [
-            0,
-            0,
-            0
-          ]
+          "address": "162.159.192.1", "port": 2408, "public_key": "${public_key}",
+          "allowed_ips": [ "0.0.0.0/0", "::/0" ],
+          "persistent_keepalive_interval": 30, "reserved": [ 0, 0, 0 ]
         }
       ]
     }
@@ -367,14 +316,7 @@ ${dns_servers_block}
     { "type": "socks", "tag": "socks-in", "listen": "0.0.0.0", "listen_port": 8008 }
   ],
   "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct",
-      "tcp_fast_open": true,
-      "tcp_multi_path": false,
-      "udp_fragment": false,
-      "connect_timeout": "5s"
-    }
+    { "type": "direct", "tag": "direct", "tcp_fast_open": true, "tcp_multi_path": false, "udp_fragment": false, "connect_timeout": "5s" }
   ],
   "route": {
     "rules": [
@@ -391,6 +333,7 @@ EOF
     log INFO "Sing-box 設定檔生成完畢。"
 }
 
+# [MODIFIED] 更新 Caddy 域名輸入邏輯
 manage_caddy() {
     if ! container_exists "$CADDY_CONTAINER_NAME"; then
         while true; do
@@ -400,18 +343,24 @@ manage_caddy() {
             case "$choice" in
                 1)
                     log INFO "--- 正在安裝 Caddy ---"
-                    while true; do read -p "請輸入主域名: " PRIMARY_DOMAIN < /dev/tty; if [ -n "$PRIMARY_DOMAIN" ] && validate_domain "$PRIMARY_DOMAIN"; then break; fi; done
+                    read -p "請輸入主域名 (可選, 用於網站偽裝, 直接回車跳過): " PRIMARY_DOMAIN < /dev/tty
+                    if [ -n "$PRIMARY_DOMAIN" ] && ! validate_domain "$PRIMARY_DOMAIN"; then press_any_key; continue; fi
+
+                    while true; do
+                        read -p "請輸入代理域名 (必選, 用於 Sing-box): " PROXY_DOMAIN < /dev/tty
+                        if [ -n "$PROXY_DOMAIN" ] && validate_domain "$PROXY_DOMAIN"; then break; fi
+                    done
+
                     while true; do read -p "請輸入您的郵箱: " EMAIL < /dev/tty; if [ -n "$EMAIL" ] && validate_email "$EMAIL"; then break; fi; done
+                    
                     read -p "請輸入後端服務地址 [預設: app:80]: " BACKEND_SERVICE < /dev/tty; BACKEND_SERVICE=${BACKEND_SERVICE:-app:80}
                     if ! validate_backend_service "$BACKEND_SERVICE"; then press_any_key; continue; fi
-                    read -p "請輸入代理域名 (可選): " PROXY_DOMAIN < /dev/tty
-                    if [ -n "$PROXY_DOMAIN" ] && ! validate_domain "$PROXY_DOMAIN"; then press_any_key; continue; fi
+                    
                     read -p "是否為 Caddy 啟用詳細日誌？(y/N): " LOG_MODE < /dev/tty
                     
                     generate_caddy_config "$PRIMARY_DOMAIN" "$EMAIL" "$LOG_MODE" "$PROXY_DOMAIN" "$BACKEND_SERVICE"
                     log INFO "正在拉取最新的 Caddy 鏡像..."; if ! docker pull "${CADDY_IMAGE_NAME}"; then log ERROR "Caddy 鏡像拉取失敗。"; press_any_key; break; fi
                     
-                    # [MODIFIED] 移除 --network, 分步執行
                     if docker run -d --name "${CADDY_CONTAINER_NAME}" --restart always -p 80:80/tcp -p 443:443/tcp -v "${CADDY_CONFIG_FILE}:/etc/caddy/Caddyfile:ro" -v "${CADDY_DATA_VOLUME}:/data" "${CADDY_IMAGE_NAME}"; then
                         if connect_to_shared_network "${CADDY_CONTAINER_NAME}"; then
                             log INFO "Caddy 部署成功,正在後台申請證書..."
@@ -461,29 +410,21 @@ update_warp_keys() {
         elif command -v dnf &>/dev/null; then dnf install -y jq;
         else log ERROR "無法自動安裝 jq,請手動安裝後重試。"; return 1; fi
     fi
-
     log INFO "請提供您的靜態 WARP WireGuard 金鑰信息。"
     local private_key warp_address ipv4_address ipv6_address
     read -p "請輸入您的 WARP PrivateKey: " private_key < /dev/tty
     read -p "請輸入您的 WARP Address (可直接粘貼帶 /32,/128 的完整行): " warp_address < /dev/tty
-    
     if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then
         log ERROR "輸入格式無效。PrivateKey 和 Address 均不能為空,且 Address 必須包含逗號。"; return 1
     fi
-
-    # 智能解析 Address 行，自動去除 CIDR 並清理空格
     ipv4_address=$(echo "$warp_address" | awk -F, '{print $1}' | awk -F/ '{print $1}' | xargs)
     ipv6_address=$(echo "$warp_address" | awk -F, '{print $2}' | awk -F/ '{print $1}' | xargs)
-
     if [ -z "$ipv4_address" ] || [ -z "$ipv6_address" ]; then
         log ERROR "無法從輸入中正確解析 IPv4 和 IPv6 地址。請檢查格式。"; return 1
     fi
-    
-    # 使用 jq 安全地更新 JSON 文件（針對新的 endpoints 格式）
     jq --arg pk "$private_key" --arg ip4 "${ipv4_address}/32" --arg ip6 "${ipv6_address}/128" \
     '.endpoints |= map(if .tag == "warp-out" then .private_key = $pk | .address = [$ip4, $ip6] else . end)' \
     "$SINGBOX_CONFIG_FILE" > "${SINGBOX_CONFIG_FILE}.tmp" && mv "${SINGBOX_CONFIG_FILE}.tmp" "$SINGBOX_CONFIG_FILE"
-
     if [ $? -eq 0 ]; then
         log INFO "WARP 金鑰已成功更新。請稍後手動重啟 Sing-box 容器以應用變更。"
     else
@@ -512,7 +453,6 @@ manage_singbox() {
                         read -p "請輸入 Sing-box 使用的域名(必須與 Caddy 配置一致): " HY_DOMAIN < /dev/tty
                     fi
                     if [ -z "$HY_DOMAIN" ] || ! validate_domain "$HY_DOMAIN"; then press_any_key; break; fi
-                    
                     read -p "是否手動輸入密碼？(預設自動生成) (y/N): " MANUAL_PASSWORD < /dev/tty
                     if [[ "$MANUAL_PASSWORD" =~ ^[yY]$ ]]; then
                         while true; do read -p "請設定連接密碼: " PASSWORD < /dev/tty; if [ -n "$PASSWORD" ]; then break; else log ERROR "密碼不能為空。"; fi; done
@@ -520,22 +460,18 @@ manage_singbox() {
                         PASSWORD=$(generate_random_password)
                         log INFO "已自動生成連接密碼: ${FontColor_Yellow}${PASSWORD}${FontColor_Suffix}"
                     fi
-
                     local SINGBOX_LOG_LEVEL="error"
                     read -p "請選擇日誌級別 [1.warn | 2.info | 預設.error]: " LOG_CHOICE < /dev/tty
                     case "$LOG_CHOICE" in 1) SINGBOX_LOG_LEVEL="warn";; 2) SINGBOX_LOG_LEVEL="info";; esac
-                    
                     local private_key ipv4_address ipv6_address public_key
                     read -p "是否自動生成新的 WARP 帳戶？(Y/n): " AUTO_WARP < /dev/tty
                     if [[ ! "$AUTO_WARP" =~ ^[nN]$ ]]; then
                         if ! generate_warp_conf; then press_any_key; break; fi
                         private_key=$(grep -oP 'PrivateKey = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
                         public_key=$(grep -oP 'PublicKey = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
-                        
                         warp_addresses=$(grep -oP 'Address = \K.*' "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf")
                         ipv4_address=$(echo "$warp_addresses" | awk -F, '{print $1}' | awk -F/ '{print $1}' | xargs)
                         ipv6_address=$(echo "$warp_addresses" | awk -F, '{print $2}' | awk -F/ '{print $1}' | xargs)
-
                         if [ -z "$ipv4_address" ] || [ -z "$ipv6_address" ]; then
                             log ERROR "從 wgcf-profile.conf 中提取 IP 地址失敗！"
                             log INFO "文件內容如下:"; cat "${SINGBOX_CONFIG_DIR}/wgcf-profile.conf"
@@ -545,26 +481,19 @@ manage_singbox() {
                         log INFO "請提供您的靜態 WARP WireGuard 金鑰信息。"
                         read -p "請輸入您的 WARP PrivateKey: " private_key < /dev/tty
                         read -p "請輸入您的 WARP Address (可直接粘貼帶 /32,/128 的完整行): " warp_address < /dev/tty
-                        
                         if [ -z "$private_key" ] || [[ ! "$warp_address" =~ "," ]]; then
                             log ERROR "輸入格式無效,安裝中止。"; press_any_key; break
                         fi
-
                         ipv4_address=$(echo "$warp_address" | awk -F, '{print $1}' | awk -F/ '{print $1}' | xargs)
                         ipv6_address=$(echo "$warp_address" | awk -F, '{print $2}' | awk -F/ '{print $1}' | xargs)
-
                         if [ -z "$ipv4_address" ] || [ -z "$ipv6_address" ]; then
                             log ERROR "無法從輸入中正確解析 IPv4 和 IPv6 地址，安裝中止。"; press_any_key; break
                         fi
-                        
                         public_key="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
                     fi
-                    
                     log INFO "正在拉取最新的 Sing-box 鏡像..."; if ! docker pull "${SINGBOX_IMAGE_NAME}"; then log ERROR "Sing-box 鏡像拉取失敗。"; press_any_key; break; fi
                     if ! generate_singbox_config "$HY_DOMAIN" "$PASSWORD" "$private_key" "$ipv4_address" "$ipv6_address" "$public_key" "$SINGBOX_LOG_LEVEL"; then log ERROR "Sing-box 設定檔生成失敗,安裝中止。"; press_any_key; break; fi
-
                     log INFO "正在部署 Sing-box 容器..."
-                    # [MODIFIED] 移除 --network, 分步執行
                     if docker run -d --name "${SINGBOX_CONTAINER_NAME}" --restart always --cap-add NET_ADMIN -e ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true -p 443:443/udp -p 8008:8008/tcp -v "${SINGBOX_CONFIG_FILE}:/etc/sing-box/config.json:ro" -v "${CADDY_DATA_VOLUME}:/caddy_certs:ro" "${SINGBOX_IMAGE_NAME}" run -c /etc/sing-box/config.json; then
                         if connect_to_shared_network "${SINGBOX_CONTAINER_NAME}"; then
                              log INFO "Sing-box 部署成功。"
@@ -619,16 +548,13 @@ manage_adguard() {
                         if [[ "$fix_port" =~ ^[yY]$ ]]; then
                             systemctl stop systemd-resolved &>/dev/null
                             systemctl disable systemd-resolved &>/dev/null
-                            # 確保 resolv.conf 裡沒有本地環回地址，防止 systemd-resolved 幽靈重啟
                             rm -f /etc/resolv.conf && echo "nameserver 8.8.8.8" > /etc/resolv.conf
                             log INFO "已停止 systemd-resolved 並重置 resolv.conf。"
                         fi
                     fi
                     log INFO "正在拉取最新的 AdGuard Home 鏡像..."; if ! docker pull "${ADGUARD_IMAGE_NAME}"; then log ERROR "鏡像拉取失敗。"; press_any_key; break; fi
                     mkdir -p "${ADGUARD_CONFIG_DIR}" "${ADGUARD_WORK_DIR}"
-
                     log INFO "正在部署 AdGuard Home 容器..."
-                    # [MODIFIED] 移除 --network, 分步執行
                     if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then
                         if connect_to_shared_network "${ADGUARD_CONTAINER_NAME}"; then
                             log INFO "AdGuard Home 部署成功。"
@@ -656,7 +582,6 @@ manage_adguard() {
                     log INFO "正在更新 AdGuard Home..."
                     docker pull "${ADGUARD_IMAGE_NAME}"
                     docker stop "${ADGUARD_CONTAINER_NAME}" &>/dev/null && docker rm "${ADGUARD_CONTAINER_NAME}" &>/dev/null
-                    # [MODIFIED] 更新時也使用分步網絡連接
                     if docker run -d --name "${ADGUARD_CONTAINER_NAME}" --restart always -v "${ADGUARD_WORK_DIR}:/opt/adguardhome/work" -v "${ADGUARD_CONFIG_DIR}:/opt/adguardhome/conf" -p 3000:3000/tcp "${ADGUARD_IMAGE_NAME}"; then
                         if connect_to_shared_network "${ADGUARD_CONTAINER_NAME}"; then
                            log INFO "更新成功。";
@@ -704,13 +629,10 @@ wait_for_container_ready() {
         local ready=false
         case "$container" in
             "$ADGUARD_CONTAINER_NAME")
-                # AdGuard：嘗試在容器內進行 DNS 查詢
                 if docker exec "$container" sh -c "timeout 1 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then ready=true; fi;;
             "$CADDY_CONTAINER_NAME")
-                # Caddy：檢查日誌中的初始化完成訊息
                 if docker logs "$container" 2>&1 | grep -q "serving initial configuration"; then ready=true; fi;;
             "$SINGBOX_CONTAINER_NAME")
-                # Sing-box：檢查日誌尾部沒有致命錯誤
                 ! docker logs "$container" 2>&1 | tail -n 20 | grep -qiE "error|fatal|fail|failed" && ready=true;;
         esac
         if $ready; then echo ""; log INFO "✓ ${service_name} 已就緒"; return 0; fi
@@ -722,7 +644,6 @@ wait_for_container_ready() {
 # 重啟所有正在運行的服務
 restart_all_services() {
     log INFO "正在按依賴順序重啟所有正在運行的容器 (AdGuard -> Caddy -> Sing-box)..."
-    # 服務重啟順序：DNS (AdGuard) 必須在 Sing-box 之前啟動。Caddy 無依賴性，但為了保險放中間。
     local restart_order=("$ADGUARD_CONTAINER_NAME:AdGuard (DNS)" "$CADDY_CONTAINER_NAME:Caddy (SSL)" "$SINGBOX_CONTAINER_NAME:Sing-box (核心服務)")
     local restarted=0
     for item in "${restart_order[@]}"; do
@@ -742,19 +663,36 @@ clear_logs_and_restart_all() {
     clear_all_logs; log INFO "3秒後將自動重啟所有服務..."; sleep 3; restart_all_services
 }
 
+# [MODIFIED] 卸載邏輯增強
 uninstall_all_services() {
     log WARN "此操作將不可逆地刪除 Caddy, Sing-box, AdGuard Home 的所有相關數據！"
     read -p "您確定要徹底清理所有服務嗎? (y/N): " choice < /dev/tty
     if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi
 
     log INFO "正在停止並刪除所有服務容器..."
-    docker stop "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME" &>/dev/null
-    docker rm "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME" &>/dev/null
+    local containers_to_remove=("$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME")
+    local container_ids=""
+    for name in "${containers_to_remove[@]}"; do
+        # -a 顯示所有, -q 只顯示ID, --filter 按名稱過濾
+        id=$(docker ps -a -q --filter "name=^/${name}$")
+        if [ -n "$id" ]; then
+            container_ids+="$id "
+        fi
+    done
+
+    if [ -n "$container_ids" ]; then
+        docker stop $container_ids &>/dev/null
+        docker rm $container_ids &>/dev/null
+        log INFO "所有現存的 HWC 容器已停止並刪除。"
+    else
+        log INFO "未找到需要清理的 HWC 容器。"
+    fi
+
     log INFO "正在刪除本地設定檔和數據..."; rm -rf "${APP_BASE_DIR}"
-    log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null
-    log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null
+    log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null || true
+    log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null || true
     log INFO "正在清除所有鏡像緩存..."
-    docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null
+    docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null || true
     log INFO "所有服務已徹底清理完畢。"
 }
 
@@ -799,12 +737,9 @@ cleanup_and_recreate_network() {
     local restart_success=true
     for container in "${found_containers[@]}"; do
         log INFO " - 啟動並連接 $container..."
-        # 由於容器在創建時已經指定了網絡，通常只需重新啟動，Docker 會自動將其連接回同名的網絡。
-        # [MODIFIED] 這裡的邏輯需要調整，因為容器創建時不再指定網絡。
-        # 改為先 start 再 connect，但 start 會失敗，因為它會嘗試連接一個不存在的網絡。
-        # cleanup_and_recreate_network 的邏輯需要重寫。
-        # 簡單起見，我們假設 start 會自動連接。對於健壯性修復，這裡保持原樣，因為網絡已重建。
-        # 真正的修復是安裝時的邏輯。
+        # 由於我們修改了安裝邏輯，容器不再在創建時綁定網絡
+        # 所以這裡的邏輯變為：先連接網絡，再啟動
+        docker network connect "${SHARED_NETWORK_NAME}" "$container" &>/dev/null || true
         if docker start "$container" &>/dev/null; then
              wait_for_container_ready "$container" "$container" 10 &>/dev/null
              log INFO " - $container 已重啟並連接。"
@@ -836,7 +771,7 @@ check_all_status() {
 start_menu() {
     while true; do
         check_all_status; clear
-        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v${SCRIPT_VERSION:-6.5.4-hotfix})"
+        echo -e "\n${FontColor_Purple}Caddy + Sing-box + AdGuard 終極管理腳本${FontColor_Suffix} (v${SCRIPT_VERSION:-6.5.5})"
         echo -e "  快捷命令: ${FontColor_Yellow}hwc${FontColor_Suffix}  |  設定目錄: ${FontColor_Yellow}${APP_BASE_DIR}${FontColor_Suffix}"
         echo -e " --------------------------------------------------"
         echo -e "  Caddy 服務        : ${CONTAINER_STATUSES[$CADDY_CONTAINER_NAME]}"
@@ -863,7 +798,7 @@ start_menu() {
 }
 
 # --- 第3節:腳本入口 (主邏輯) ---
-SCRIPT_VERSION="6.5.4-hotfix"
+SCRIPT_VERSION="6.5.5"
 clear
 cat <<-'EOM'
   ____      _        __          __      _   _             _             _
