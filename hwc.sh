@@ -233,6 +233,7 @@ restart_all_services() { log INFO "正在按依賴順序重啟所有正在運行
 clear_logs_and_restart_all() { clear_all_logs; log INFO "3秒後將自動重啟所有服務..."; sleep 3; restart_all_services; }
 uninstall_all_services() { log WARN "此操作將不可逆地刪除 Caddy, Sing-box, AdGuard Home 的所有相關數據！"; read -p "您確定要徹底清理所有服務嗎? (y/N): " choice < /dev/tty; if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi; log INFO "正在停止並刪除所有服務容器..."; local containers_to_remove=("$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME"); local container_ids=""; for name in "${containers_to_remove[@]}"; do id=$(docker ps -a -q --filter "name=^/${name}$"); if [ -n "$id" ]; then container_ids+="$id "; fi; done; if [ -n "$container_ids" ]; then docker stop $container_ids &>/dev/null; docker rm $container_ids &>/dev/null; log INFO "所有現存的 HWC 容器已停止並刪除。"; else log INFO "未找到需要清理的 HWC 容器。"; fi; log INFO "正在刪除本地設定檔和數據..."; rm -rf "${APP_BASE_DIR}"; log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null || true; log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null || true; log INFO "正在清除所有鏡像緩存..."; docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null || true; log INFO "所有服務已徹底清理完畢。"; }
 
+# [v6.6.2] 修復: 在啟動前重新連接容器到新網絡
 cleanup_and_recreate_network() {
     log WARN "此操作將停止所有 HWC 相關容器，清空其日誌，刪除並重建共享網絡 (${SHARED_NETWORK_NAME})，然後重新啟動容器。"
     read -p "您確定要執行 '一鍵淨化共享網絡' 嗎? (y/N): " choice < /dev/tty
@@ -261,9 +262,20 @@ cleanup_and_recreate_network() {
     fi
     
     local restart_order=("$ADGUARD_CONTAINER_NAME" "$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME")
-    log INFO "4/5 正在按順序啟動所有服務..."
+    log INFO "4/5 正在重新連接並按順序啟動所有服務..."
     for container in "${restart_order[@]}"; do
         if [[ " ${found_containers[*]} " =~ " ${container} " ]]; then
+            # 【關鍵修復】在啟動前，將容器連接到新創建的網絡
+            log INFO " - 正在重新連接 ${container} 到網絡..."
+            if ! docker network connect "${SHARED_NETWORK_NAME}" "${container}" --ip "${ADGUARD_STATIC_IP}"; then
+                 # 根據容器名分配對應的靜態IP
+                case "$container" in
+                    "$ADGUARD_CONTAINER_NAME") docker network connect "${SHARED_NETWORK_NAME}" "${container}" --ip "${ADGUARD_STATIC_IP}" &>/dev/null ;;
+                    "$CADDY_CONTAINER_NAME")   docker network connect "${SHARED_NETWORK_NAME}" "${container}" --ip "${CADDY_STATIC_IP}" &>/dev/null ;;
+                    "$SINGBOX_CONTAINER_NAME")  docker network connect "${SHARED_NETWORK_NAME}" "${container}" --ip "${SINGBOX_STATIC_IP}" &>/dev/null ;;
+                esac
+            fi
+
             log INFO " - 正在啟動 ${container}..."
             if docker start "${container}" &>/dev/null; then
                 local service_name="${container/hwc-/}"
