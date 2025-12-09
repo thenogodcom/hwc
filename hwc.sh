@@ -241,8 +241,8 @@ restart_all_services() {
             log INFO "正在重啟 ${service_name}..."
             if docker restart "$container" &>/dev/null; then
                 restarted=$((restarted + 1))
-                log INFO "為 ${service_name} 提供了 10 秒的初始化等待時間..."
-                sleep 10
+                log INFO "為 ${service_name} 提供了 20 秒的初始化等待時間..."
+                sleep 20
                 if ! wait_for_container_ready "$container" "$service_name"; then
                     log WARN "✗ ${service_name} 未能在 30 秒內达到就绪检查点, 但將繼續下一步"
                 fi
