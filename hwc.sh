@@ -230,7 +230,33 @@ wait_for_container_ready() {
     echo ""; log WARN "✗ ${service_name} 在 ${max_wait} 秒內未能达到就绪状态。"
     return 1
 }
-restart_all_services() { log INFO "正在按依賴順序重啟所有正在運行的容器 (AdGuard -> Caddy -> Sing-box)..."; local restart_order=("$ADGUARD_CONTAINER_NAME:AdGuard (DNS)" "$CADDY_CONTAINER_NAME:Caddy (SSL)" "$SINGBOX_CONTAINER_NAME:Sing-box (核心服務)"); local restarted=0; for item in "${restart_order[@]}"; do local container="${item%%:*}" service_name="${item#*:}"; if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then log INFO "正在重啟 ${service_name}..."; if docker restart "$container" &>/dev/null; then restarted=$((restarted + 1)); if ! wait_for_container_ready "$container" "$service_name"; then log WARN "✗ ${service_name} 未能在 30 秒內就緒,但將繼續下一步"; fi; sleep 2; else log ERROR "✗ ${service_name} 重啟失敗"; fi; fi; done; if [ "$restarted" -eq 0 ]; then log WARN "沒有正在運行的容器可供重啟。"; else log INFO "所有服務已按順序重啟完成。"; fi; }
+restart_all_services() {
+    log INFO "正在按依賴順序重啟所有正在運行的容器 (AdGuard -> Caddy -> Sing-box)..."
+    local restart_order=("$ADGUARD_CONTAINER_NAME:AdGuard (DNS)" "$CADDY_CONTAINER_NAME:Caddy (SSL)" "$SINGBOX_CONTAINER_NAME:Sing-box (核心服務)")
+    local restarted=0
+    for item in "${restart_order[@]}"; do
+        local container="${item%%:*}"
+        local service_name="${item#*:}"
+        if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
+            log INFO "正在重啟 ${service_name}..."
+            if docker restart "$container" &>/dev/null; then
+                restarted=$((restarted + 1))
+                log INFO "為 ${service_name} 提供了 10 秒的初始化等待時間..."
+                sleep 10
+                if ! wait_for_container_ready "$container" "$service_name"; then
+                    log WARN "✗ ${service_name} 未能在 30 秒內达到就绪检查点, 但將繼續下一步"
+                fi
+            else
+                log ERROR "✗ ${service_name} 重啟失敗"
+            fi
+        fi
+    done
+    if [ "$restarted" -eq 0 ]; then
+        log WARN "沒有正在運行的容器可供重啟。"
+    else
+        log INFO "所有服務已按順序重啟完成。"
+    fi
+}
 clear_logs_and_restart_all() { clear_all_logs; log INFO "3秒後將自動重啟所有服務..."; sleep 3; restart_all_services; }
 uninstall_all_services() { log WARN "此操作將不可逆地刪除 Caddy, Sing-box, AdGuard Home 的所有相關數據！"; read -p "您確定要徹底清理所有服務嗎? (y/N): " choice < /dev/tty; if [[ ! "$choice" =~ ^[yY]$ ]]; then log INFO "操作已取消。"; return; fi; log INFO "正在停止並刪除所有服務容器..."; local containers_to_remove=("$CADDY_CONTAINER_NAME" "$SINGBOX_CONTAINER_NAME" "$ADGUARD_CONTAINER_NAME"); local container_ids=""; for name in "${containers_to_remove[@]}"; do id=$(docker ps -a -q --filter "name=^/${name}$"); if [ -n "$id" ]; then container_ids+="$id "; fi; done; if [ -n "$container_ids" ]; then docker stop $container_ids &>/dev/null; docker rm $container_ids &>/dev/null; log INFO "所有現存的 HWC 容器已停止並刪除。"; else log INFO "未找到需要清理的 HWC 容器。"; fi; log INFO "正在刪除本地設定檔和數據..."; rm -rf "${APP_BASE_DIR}"; log INFO "正在刪除 Docker 數據卷..."; docker volume rm "${CADDY_DATA_VOLUME}" &>/dev/null || true; log INFO "正在刪除共享網路..."; docker network rm "${SHARED_NETWORK_NAME}" &>/dev/null || true; log INFO "正在清除所有鏡像緩存..."; docker rmi -f "${CADDY_IMAGE_NAME}" "${SINGBOX_IMAGE_NAME}" "${ADGUARD_IMAGE_NAME}" &>/dev/null || true; log INFO "所有服務已徹底清理完畢。"; }
 
