@@ -207,54 +207,83 @@ clear_all_logs() { log INFO "正在清除所有已安裝服務容器的內部日
 
 wait_for_container_ready() {
     local container="$1" service_name="$2" max_wait="${3:-30}"
-    log INFO "等待 ${service_name} 就緒..."
-    for (( i=1; i<=max_wait; i++ )); do
+    log INFO "等待 ${service_name} 啟動並進入就緒狀態..."
+    
+    local i=0
+    while [ $i -lt $max_wait ]; do
+        # 1. 基礎檢查：容器是否正在運行
         if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]; then
-            if (( i > 5 )); then log WARN "✗ ${service_name} 容器未能保持运行状态。"; return 1; fi
-            sleep 1; continue
+            if (( i > 5 )); then log WARN "✗ ${service_name} 容器未能保持運行狀態。"; return 1; fi
+            sleep 1; i=$((i+1)); continue
         fi
         
+        # 2. 深度檢查：應用程式是否真正就緒
         local ready=false
         case "$container" in
-            "$ADGUARD_CONTAINER_NAME")
-                if docker exec "$container" sh -c "timeout 2 nslookup google.com 127.0.0.1 >/dev/null 2>&1" 2>/dev/null; then ready=true; fi;;
             "$CADDY_CONTAINER_NAME")
-                if docker logs "$container" 2>&1 | grep -q "serving initial configuration"; then ready=true; fi;;
+                # Caddy 檢查: 嘗試存取 Admin API (127.0.0.1:2019/config/)，這是比日誌更準確的就緒指標
+                if docker exec "$container" wget -q -O - http://127.0.0.1:2019/config/ >/dev/null 2>&1; then ready=true; fi
+                ;;
+            "$ADGUARD_CONTAINER_NAME")
+                # AdGuard 檢查: 嘗試在本機解析域名
+                if docker exec "$container" nslookup -timeout=1 google.com 127.0.0.1 >/dev/null 2>&1; then ready=true; fi
+                ;;
             "$SINGBOX_CONTAINER_NAME")
-                if (( i > 3 )); then ready=true; fi;;
+                # Sing-box 檢查: Sing-box 啟動較快，但若配置錯誤會立即退出。
+                # 我們檢查它是否存活超過 3 秒且日誌中沒有致命錯誤
+                if (( i > 3 )); then
+                    if ! docker logs --tail 20 "$container" 2>&1 | grep -iq "fatal"; then ready=true; fi
+                fi
+                ;;
+            *)
+                ready=true
+                ;;
         esac
 
-        if $ready; then echo ""; log INFO "✓ ${service_name} 已就緒"; return 0; fi
-        echo -ne "."; sleep 1
+        if $ready; then
+            echo ""; log INFO "✓ ${service_name} 檢測通過，服務已就緒。"; return 0
+        fi
+        
+        echo -ne "."
+        sleep 1
+        i=$((i+1))
     done
-    echo ""; log WARN "✗ ${service_name} 在 ${max_wait} 秒內未能达到就绪状态。"
-    return 1
+    
+    echo ""
+    log WARN "✗ ${service_name} 在 ${max_wait} 秒內未能通過就緒檢測，但容器仍在運行，將繼續執行..."
+    return 0
 }
 restart_all_services() {
-    log INFO "正在按依賴順序重啟所有正在運行的容器 (AdGuard -> Caddy -> Sing-box)..."
-    local restart_order=("$ADGUARD_CONTAINER_NAME:AdGuard (DNS)" "$CADDY_CONTAINER_NAME:Caddy (SSL)" "$SINGBOX_CONTAINER_NAME:Sing-box (核心服務)")
-    local restarted=0
+    log INFO "正在按依賴順序重啟容器: Caddy (SSL/Proxy) -> AdGuard (DNS) -> Sing-box (Core)..."
+    
+    # 定義重啟順序：Caddy 最先 (為 Sing-box 提供證書路徑/網絡)，AdGuard 次之 (提供 DNS)，Sing-box 最後
+    local restart_order=("$CADDY_CONTAINER_NAME:Caddy" "$ADGUARD_CONTAINER_NAME:AdGuard" "$SINGBOX_CONTAINER_NAME:Sing-box")
+    local restarted_count=0
+    
     for item in "${restart_order[@]}"; do
         local container="${item%%:*}"
         local service_name="${item#*:}"
+        
         if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
+            log INFO "--------------------------------------------------"
             log INFO "正在重啟 ${service_name}..."
             if docker restart "$container" &>/dev/null; then
-                restarted=$((restarted + 1))
-                log INFO "為 ${service_name} 提供了 20 秒的初始化等待時間..."
-                sleep 20
-                if ! wait_for_container_ready "$container" "$service_name"; then
-                    log WARN "✗ ${service_name} 未能在 30 秒內达到就绪检查点, 但將繼續下一步"
-                fi
+                restarted_count=$((restarted_count + 1))
+                # 調用優化後的檢測函數，設置超時為 20 秒
+                wait_for_container_ready "$container" "$service_name" 20
             else
-                log ERROR "✗ ${service_name} 重啟失敗"
+                log ERROR "✗ ${service_name} 重啟指令執行失敗！"
             fi
+        else
+            log INFO "跳過 ${service_name} (未安裝或未運行)。"
         fi
     done
-    if [ "$restarted" -eq 0 ]; then
-        log WARN "沒有正在運行的容器可供重啟。"
+
+    log INFO "--------------------------------------------------"
+    if [ "$restarted_count" -eq 0 ]; then
+        log WARN "沒有正在運行的容器被重啟。"
     else
-        log INFO "所有服務已按順序重啟完成。"
+        log INFO "所有服務重啟流程結束。"
     fi
 }
 clear_logs_and_restart_all() { clear_all_logs; log INFO "3秒後將自動重啟所有服務..."; sleep 3; restart_all_services; }
