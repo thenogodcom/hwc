@@ -277,13 +277,13 @@ restart_all_services() {
                 # 2. 【關鍵修改】針對不同服務加入強制緩衝時間
                 case "$container" in
                     "$CADDY_CONTAINER_NAME")
-                        log INFO "等待 Caddy 釋放端口並穩定網絡 (額外緩衝 12 秒)..."
-                        sleep 12
+                        log INFO "等待 Caddy 釋放端口並穩定網絡 (額外緩衝 20 秒)..."
+                        sleep 20
                         ;;
                     "$ADGUARD_CONTAINER_NAME")
-                        log INFO "等待 AdGuard 建立上游 DNS 連接 (額外緩衝 12 秒)..."
+                        log INFO "等待 AdGuard 建立上游 DNS 連接 (額外緩衝 20 秒)..."
                         # 這裡是解決 Sing-box 連不上的核心，給足時間讓 DNS 準備好
-                        sleep 12
+                        sleep 20
                         ;;
                 esac
             else
