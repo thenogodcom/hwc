@@ -256,7 +256,7 @@ wait_for_container_ready() {
 restart_all_services() {
     log INFO "正在按依賴順序重啟容器: Caddy (SSL/Proxy) -> AdGuard (DNS) -> Sing-box (Core)..."
     
-    # 定義重啟順序：Caddy 最先 (為 Sing-box 提供證書路徑/網絡)，AdGuard 次之 (提供 DNS)，Sing-box 最後
+    # 定義重啟順序
     local restart_order=("$CADDY_CONTAINER_NAME:Caddy" "$ADGUARD_CONTAINER_NAME:AdGuard" "$SINGBOX_CONTAINER_NAME:Sing-box")
     local restarted_count=0
     
@@ -267,10 +267,25 @@ restart_all_services() {
         if container_exists "$container" && [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
             log INFO "--------------------------------------------------"
             log INFO "正在重啟 ${service_name}..."
+            
             if docker restart "$container" &>/dev/null; then
                 restarted_count=$((restarted_count + 1))
-                # 調用優化後的檢測函數，設置超時為 20 秒
+                
+                # 1. 先做基礎的就緒檢測
                 wait_for_container_ready "$container" "$service_name" 20
+                
+                # 2. 【關鍵修改】針對不同服務加入強制緩衝時間
+                case "$container" in
+                    "$CADDY_CONTAINER_NAME")
+                        log INFO "等待 Caddy 釋放端口並穩定網絡 (額外緩衝 5 秒)..."
+                        sleep 5
+                        ;;
+                    "$ADGUARD_CONTAINER_NAME")
+                        log INFO "等待 AdGuard 建立上游 DNS 連接 (額外緩衝 12 秒)..."
+                        # 這裡是解決 Sing-box 連不上的核心，給足時間讓 DNS 準備好
+                        sleep 12
+                        ;;
+                esac
             else
                 log ERROR "✗ ${service_name} 重啟指令執行失敗！"
             fi
@@ -283,7 +298,7 @@ restart_all_services() {
     if [ "$restarted_count" -eq 0 ]; then
         log WARN "沒有正在運行的容器被重啟。"
     else
-        log INFO "所有服務重啟流程結束。"
+        log INFO "所有服務重啟流程結束，代理應已生效。"
     fi
 }
 clear_logs_and_restart_all() { clear_all_logs; log INFO "3秒後將自動重啟所有服務..."; sleep 3; restart_all_services; }
