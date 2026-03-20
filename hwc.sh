@@ -25,7 +25,7 @@ log() {
 # 固定的應用程式基礎目錄
 APP_BASE_DIR="/root/hwc"
 CADDY_CONTAINER_NAME="caddy-manager"; CADDY_IMAGE_NAME="caddy:latest"; CADDY_CONFIG_DIR="${APP_BASE_DIR}/caddy"; CADDY_CONFIG_FILE="${CADDY_CONFIG_DIR}/Caddyfile"; CADDY_DATA_VOLUME="hwc_caddy_data"
-SINGBOX_CONTAINER_NAME="sing-box"; SINGBOX_IMAGE_NAME="ghcr.io/sagernet/sing-box:v1.11.15"; SINGBOX_CONFIG_DIR="${APP_BASE_DIR}/singbox"; SINGBOX_CONFIG_FILE="${SINGBOX_CONFIG_DIR}/config.json"
+SINGBOX_CONTAINER_NAME="sing-box"; SINGBOX_IMAGE_NAME="ghcr.io/sagernet/sing-box:latest"; SINGBOX_CONFIG_DIR="${APP_BASE_DIR}/singbox"; SINGBOX_CONFIG_FILE="${SINGBOX_CONFIG_DIR}/config.json"
 
 SHARED_NETWORK_NAME="hwc-proxy-net"
 SHARED_NETWORK_SUBNET="172.18.0.0/16"
